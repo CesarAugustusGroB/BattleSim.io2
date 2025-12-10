@@ -6,7 +6,13 @@ export enum Team {
 export enum UnitType {
   SOLDIER = 'SOLDIER',
   TANK = 'TANK',
-  ARCHER = 'ARCHER'
+  ARCHER = 'ARCHER',
+  CAVALRY = 'CAVALRY'
+}
+
+export enum TeamStrategy {
+  ATTACK = 'ATTACK',
+  DEFEND = 'DEFEND'
 }
 
 export interface Vector2 {
@@ -19,11 +25,21 @@ export interface UnitConfig {
   radius: number;
   mass: number;
   speed: number;
+  acceleration: number;
   health: number;
   damage: number;
+  defense: number;
   range: number;
   attackCooldown: number;
   color: string;
+}
+
+export enum UnitState {
+  IDLE = 'IDLE',
+  MOVING = 'MOVING',
+  ATTACKING = 'ATTACKING',
+  DEFENDING = 'DEFENDING',
+  FLEEING = 'FLEEING'
 }
 
 export interface Unit {
@@ -38,6 +54,12 @@ export interface Unit {
   maxHealth: number;
   targetId: string | null;
   cooldownTimer: number;
+
+  // RTS Props
+  state: UnitState;
+  selected: boolean;
+  morale: number;
+  commandTarget: Vector2 | null;
 }
 
 export interface Particle {

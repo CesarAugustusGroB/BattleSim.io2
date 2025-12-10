@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { SimulationEngine } from '../services/simulation';
 import { WORLD_WIDTH, WORLD_HEIGHT, TEAM_COLORS, UNIT_CONFIGS } from '../constants';
 import { Team, Vector2, UnitType } from '../types';
@@ -16,6 +16,38 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
   const cameraRef = useRef({ x: 0, y: 0, zoom: 0.5 });
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
+  const [cursorStyle, setCursorStyle] = useState('cursor-crosshair');
+
+  // Keyboard State
+  const keysPressed = useRef<Set<string>>(new Set());
+
+  // Input Listeners
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => keysPressed.current.add(e.code);
+    const handleKeyUp = (e: KeyboardEvent) => keysPressed.current.delete(e.code);
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  const getWorldPos = (clientX: number, clientY: number) => {
+    if (!canvasRef.current || !containerRef.current) return { x: 0, y: 0 };
+    const rect = canvasRef.current.getBoundingClientRect();
+    const cam = cameraRef.current;
+
+    const screenX = clientX - rect.left;
+    const screenY = clientY - rect.top;
+
+    return {
+      x: (screenX - rect.width / 2) / cam.zoom + cam.x,
+      y: (screenY - rect.height / 2) / cam.zoom + cam.y
+    };
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -39,6 +71,13 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
 
       const cam = cameraRef.current;
 
+      // Keyboard Panning
+      const panSpeed = 15 / cam.zoom;
+      if (keysPressed.current.has('KeyW') || keysPressed.current.has('ArrowUp')) cam.y -= panSpeed;
+      if (keysPressed.current.has('KeyS') || keysPressed.current.has('ArrowDown')) cam.y += panSpeed;
+      if (keysPressed.current.has('KeyA') || keysPressed.current.has('ArrowLeft')) cam.x -= panSpeed;
+      if (keysPressed.current.has('KeyD') || keysPressed.current.has('ArrowRight')) cam.x += panSpeed;
+
       // Clear Screen
       ctx.fillStyle = '#1a1a1a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -53,7 +92,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       ctx.strokeStyle = '#333';
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      
+
       // Draw Grid Lines (Optimization: only draw visible lines?)
       ctx.strokeStyle = '#262626';
       ctx.lineWidth = 2;
@@ -72,7 +111,13 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       for (const unit of simulation.units.values()) {
         const config = UNIT_CONFIGS[unit.type];
         const colors = unit.team === Team.BLUE ? TEAM_COLORS.BLUE : TEAM_COLORS.RED;
-        
+
+        // Draw Shadow (offset for depth)
+        ctx.beginPath();
+        ctx.arc(unit.position.x + 3, unit.position.y + 3, config.radius * 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fill();
+
         // Draw Body
         ctx.beginPath();
         ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
@@ -82,37 +127,114 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Draw Health Bar (Optimization: only if damaged?)
-        if (unit.health < unit.maxHealth) {
-          const hpPct = unit.health / unit.maxHealth;
-          const barWidth = config.radius * 2;
-          ctx.fillStyle = 'red';
-          ctx.fillRect(unit.position.x - config.radius, unit.position.y - config.radius - 6, barWidth, 3);
-          ctx.fillStyle = '#00ff00';
-          ctx.fillRect(unit.position.x - config.radius, unit.position.y - config.radius - 6, barWidth * hpPct, 3);
+        // Draw Facing Direction (arrow/wedge)
+        const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
+        if (speed > 0.1) {
+          const angle = Math.atan2(unit.velocity.y, unit.velocity.x);
+          ctx.save();
+          ctx.translate(unit.position.x, unit.position.y);
+          ctx.rotate(angle);
+
+          // Draw direction indicator
+          ctx.beginPath();
+          ctx.moveTo(config.radius * 0.8, 0);
+          ctx.lineTo(config.radius * 0.3, -config.radius * 0.4);
+          ctx.lineTo(config.radius * 0.3, config.radius * 0.4);
+          ctx.closePath();
+          ctx.fillStyle = colors.secondary;
+          ctx.fill();
+          ctx.restore();
         }
 
-        // Draw Projectiles/Attack Lines
+        // Draw Health Bar (animated smooth)
+        if (unit.health < unit.maxHealth) {
+          const hpPct = Math.max(0, unit.health / unit.maxHealth);
+          const barWidth = config.radius * 2.5;
+          const barHeight = 4;
+          const barY = unit.position.y - config.radius - 10;
+
+          // Background
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(unit.position.x - barWidth / 2, barY, barWidth, barHeight);
+
+          // Health gradient
+          const gradient = ctx.createLinearGradient(
+            unit.position.x - barWidth / 2, barY,
+            unit.position.x + barWidth / 2, barY
+          );
+          if (hpPct > 0.5) {
+            gradient.addColorStop(0, '#22c55e');
+            gradient.addColorStop(1, '#4ade80');
+          } else if (hpPct > 0.25) {
+            gradient.addColorStop(0, '#eab308');
+            gradient.addColorStop(1, '#facc15');
+          } else {
+            gradient.addColorStop(0, '#dc2626');
+            gradient.addColorStop(1, '#ef4444');
+          }
+          ctx.fillStyle = gradient;
+          ctx.fillRect(unit.position.x - barWidth / 2, barY, barWidth * hpPct, barHeight);
+        }
+
+        // Draw Attack Lines / Projectiles
         if (unit.targetId && unit.cooldownTimer > config.attackCooldown - 5) {
-            const target = simulation.units.get(unit.targetId);
-            if (target) {
-                ctx.beginPath();
-                ctx.moveTo(unit.position.x, unit.position.y);
-                ctx.lineTo(target.position.x, target.position.y);
-                ctx.strokeStyle = colors.bullet;
-                ctx.lineWidth = unit.type === UnitType.ARCHER ? 1 : 3;
-                ctx.stroke();
+          const target = simulation.units.get(unit.targetId);
+          if (target) {
+            if (unit.type === UnitType.ARCHER) {
+              // Draw arrow projectile
+              const dx = target.position.x - unit.position.x;
+              const dy = target.position.y - unit.position.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              const t = 1 - (unit.cooldownTimer - (config.attackCooldown - 5)) / 5;
+
+              const arrowX = unit.position.x + dx * t;
+              const arrowY = unit.position.y + dy * t;
+              const angle = Math.atan2(dy, dx);
+
+              ctx.save();
+              ctx.translate(arrowX, arrowY);
+              ctx.rotate(angle);
+
+              // Arrow shape
+              ctx.beginPath();
+              ctx.moveTo(8, 0);
+              ctx.lineTo(-4, -3);
+              ctx.lineTo(-2, 0);
+              ctx.lineTo(-4, 3);
+              ctx.closePath();
+              ctx.fillStyle = colors.bullet;
+              ctx.fill();
+              ctx.restore();
+            } else {
+              // Melee attack flash
+              ctx.beginPath();
+              ctx.moveTo(unit.position.x, unit.position.y);
+              ctx.lineTo(target.position.x, target.position.y);
+              ctx.strokeStyle = colors.bullet;
+              ctx.lineWidth = 3;
+              ctx.globalAlpha = 0.7;
+              ctx.stroke();
+              ctx.globalAlpha = 1.0;
             }
+          }
         }
       }
 
-      // Render Particles
+      // Render Particles with glow
       for (const p of simulation.particles) {
-        ctx.globalAlpha = p.life / p.maxLife;
+        const alpha = p.life / p.maxLife;
+        ctx.globalAlpha = alpha;
+
+        // Glow effect
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 8;
+
         ctx.fillStyle = p.color;
         ctx.beginPath();
         ctx.arc(p.position.x, p.position.y, p.size, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.shadowBlur = 0;
         ctx.globalAlpha = 1.0;
       }
 
@@ -123,57 +245,86 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
     render();
 
     return () => cancelAnimationFrame(animationFrameId);
-  }, [simulation]);
+  }, [simulation]); // removed currentDrag dependency
 
   // Mouse Handlers for Camera and Spawning
-  const handleWheel = (e: React.WheelEvent) => {
-    const cam = cameraRef.current;
-    const zoomSensitivity = 0.001;
-    const newZoom = Math.min(Math.max(0.1, cam.zoom - e.deltaY * zoomSensitivity), 3);
-    cam.zoom = newZoom;
-  };
+
+  // use non-passive event listener for wheel to allows preventDefault
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const cam = cameraRef.current;
+
+      // Smart Zoom: Zoom towards mouse cursor
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      // World pos before zoom
+      const worldBefore = {
+        x: (mouseX - rect.width / 2) / cam.zoom + cam.x,
+        y: (mouseY - rect.height / 2) / cam.zoom + cam.y
+      };
+
+      const zoomSensitivity = 0.001;
+      const newZoom = Math.min(Math.max(0.1, cam.zoom - e.deltaY * zoomSensitivity), 3);
+      cam.zoom = newZoom;
+
+      // Calculate new cam position
+      cam.x = worldBefore.x - (mouseX - rect.width / 2) / newZoom;
+      cam.y = worldBefore.y - (mouseY - rect.height / 2) / newZoom;
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 2 || e.altKey) { // Right click or Alt+Click to pan
+    // Middle Click or Alt+Click to pan
+    if (e.button === 1 || e.altKey) {
+      e.preventDefault();
       isDragging.current = true;
       lastMouse.current = { x: e.clientX, y: e.clientY };
-    } else {
-      // Convert screen to world
-      const rect = canvasRef.current!.getBoundingClientRect();
-      const cam = cameraRef.current;
-      
-      const screenX = e.clientX - rect.left;
-      const screenY = e.clientY - rect.top;
-
-      // Inverse Transform
-      const worldX = (screenX - rect.width / 2) / cam.zoom + cam.x;
-      const worldY = (screenY - rect.height / 2) / cam.zoom + cam.y;
-
-      onSelectPos(worldX, worldY);
+      setCursorStyle('cursor-grabbing');
+      return;
     }
+
+    // Left Click - Spawn Unit
+    if (e.button === 0) {
+      const worldPos = getWorldPos(e.clientX, e.clientY);
+      onSelectPos(worldPos.x, worldPos.y);
+    }
+
+    // Right Click - Currently does nothing (removed Selection logic)
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isDragging.current) {
+      // Pan Camera
       const dx = e.clientX - lastMouse.current.x;
       const dy = e.clientY - lastMouse.current.y;
-      
+
       cameraRef.current.x -= dx / cameraRef.current.zoom;
       cameraRef.current.y -= dy / cameraRef.current.zoom;
-      
+
       lastMouse.current = { x: e.clientX, y: e.clientY };
     }
   };
 
-  const handleMouseUp = () => {
-    isDragging.current = false;
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (isDragging.current) {
+      isDragging.current = false;
+      setCursorStyle('cursor-crosshair');
+    }
   };
 
   return (
-    <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-black cursor-crosshair">
+    <div ref={containerRef} className={`w-full h-full relative overflow-hidden bg-black ${cursorStyle}`}>
       <canvas
         ref={canvasRef}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -182,7 +333,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
         className="block"
       />
       <div className="absolute top-4 left-4 text-white/50 text-xs select-none pointer-events-none">
-        Right-click to Pan • Scroll to Zoom • Left-click to Spawn
+        Left-click to Spawn • Middle-click/WASD to Pan • Scroll to Zoom
       </div>
     </div>
   );

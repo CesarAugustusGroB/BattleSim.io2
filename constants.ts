@@ -9,33 +9,52 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     type: UnitType.SOLDIER,
     radius: 6,
     mass: 1.0,
-    speed: 1.8,
+    speed: 2.4, // Faster base speed
+    acceleration: 0.25, // Snappy acceleration
     health: 40,
     damage: 8,
+    defense: 2, // Light armor
     range: 15, // Melee range
-    attackCooldown: 40,
+    attackCooldown: 35, // Faster attacks
     color: '#', // Set dynamically based on team
   },
   [UnitType.TANK]: {
     type: UnitType.TANK,
     radius: 14,
     mass: 10.0,
-    speed: 0.8,
+    speed: 1.0, // Slightly faster
+    acceleration: 0.05, // Still sluggish but better
     health: 250,
     damage: 25,
+    defense: 10, // Heavy armor
     range: 20,
-    attackCooldown: 90,
+    attackCooldown: 75, // Faster attacks
     color: '#',
   },
   [UnitType.ARCHER]: {
     type: UnitType.ARCHER,
     radius: 7,
     mass: 0.8,
-    speed: 1.4,
+    speed: 1.8, // Good kiting speed
+    acceleration: 0.22, // Very nimble
     health: 30,
     damage: 12,
+    defense: 1, // Fragile - no armor
     range: 150, // Ranged
-    attackCooldown: 60,
+    attackCooldown: 45, // Faster shooting
+    color: '#',
+  },
+  [UnitType.CAVALRY]: {
+    type: UnitType.CAVALRY,
+    radius: 10,
+    mass: 3.0,
+    speed: 4.5, // Devastating speed
+    acceleration: 0.12, // Builds momentum
+    health: 80,
+    damage: 20, // High charge damage
+    defense: 4, // Medium armor
+    range: 18, // Melee
+    attackCooldown: 55, // Fast strikes
     color: '#',
   }
 };
