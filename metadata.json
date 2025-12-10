@@ -1,0 +1,5 @@
+{
+  "name": "BattleSim.io",
+  "description": "A high-performance 2D battle simulator inspired by .io games. Features custom physics, spatial partitioning for massive unit counts, and a Gemini-powered strategic advisor with advanced reasoning capabilities.",
+  "requestFramePermissions": []
+}
