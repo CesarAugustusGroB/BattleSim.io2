@@ -6,7 +6,8 @@ export enum Team {
 export enum UnitType {
   SOLDIER = 'SOLDIER',
   TANK = 'TANK',
-  ARCHER = 'ARCHER'
+  ARCHER = 'ARCHER',
+  CAVALRY = 'CAVALRY'
 }
 
 export interface Vector2 {
@@ -18,7 +19,9 @@ export interface UnitConfig {
   type: UnitType;
   radius: number;
   mass: number;
+  defense: number;
   speed: number;
+  acceleration: number;
   health: number;
   damage: number;
   range: number;
@@ -34,6 +37,7 @@ export interface Unit {
   velocity: Vector2;
   radius: number;
   mass: number;
+  defense: number;
   health: number;
   maxHealth: number;
   targetId: string | null;

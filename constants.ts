@@ -8,8 +8,10 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
   [UnitType.SOLDIER]: {
     type: UnitType.SOLDIER,
     radius: 6,
-    mass: 1.0,
+    mass: 1.70,
+    defense: 3,
     speed: 1.8,
+    acceleration: 0.15,
     health: 40,
     damage: 8,
     range: 15, // Melee range
@@ -19,8 +21,10 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
   [UnitType.TANK]: {
     type: UnitType.TANK,
     radius: 14,
-    mass: 10.0,
-    speed: 0.8,
+    mass: 13.0, // Increased mass for better stability
+    defense: 6,
+    speed: 1.5,
+    acceleration: 0.08, // Very slow acceleration
     health: 250,
     damage: 25,
     range: 20,
@@ -30,12 +34,27 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
   [UnitType.ARCHER]: {
     type: UnitType.ARCHER,
     radius: 7,
-    mass: 0.8,
-    speed: 1.4,
+    mass: 1.0,
+    defense: 1,
+    speed: 2.0,
+    acceleration: 0.2,
     health: 30,
-    damage: 12,
+    damage: 8,
     range: 150, // Ranged
     attackCooldown: 60,
+    color: '#',
+  },
+  [UnitType.CAVALRY]: {
+    type: UnitType.CAVALRY,
+    radius: 9,
+    mass: 3.5, // Heavier than soldier, lighter than tank
+    defense: 2,
+    speed: 3.5, // Very fast
+    acceleration: 0.5, // Accelerates quickly (Charge)
+    health: 80,
+    damage: 12,
+    range: 18, // Melee but slightly longer reach
+    attackCooldown: 50,
     color: '#',
   }
 };

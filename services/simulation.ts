@@ -85,6 +85,7 @@ export class SimulationEngine {
       velocity: { x: 0, y: 0 },
       radius: config.radius,
       mass: config.mass,
+      defense: config.defense,
       health: config.health,
       maxHealth: config.health,
       targetId: null,
@@ -175,9 +176,10 @@ export class SimulationEngine {
         }
       }
 
-      // Apply Force to Velocity
-      unit.velocity.x += force.x * 0.2; // Acceleration
-      unit.velocity.y += force.y * 0.2;
+      // Apply Force to Velocity with ACCELERATION
+      // Physics: Force * Acceleration_Factor -> Velocity change
+      unit.velocity.x += force.x * config.acceleration; 
+      unit.velocity.y += force.y * config.acceleration;
 
       // Friction / Damping
       unit.velocity.x *= 0.9;
@@ -205,17 +207,46 @@ export class SimulationEngine {
 
       if (unit.targetId && unit.cooldownTimer <= 0) {
           const target = this.units.get(unit.targetId);
+          // Note: distToTarget is from before movement, but it's a good enough approximation for melee range check logic
           if (target && distToTarget <= config.range + target.radius) {
-              // Attack!
-              target.health -= config.damage;
-              unit.cooldownTimer = config.attackCooldown;
               
-              // Sparks on hit
-              this.spawnParticles(target.position.x, target.position.y, '#ffffff', 2, 2);
+              // --- CHARGE LOGIC ---
+              const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
+              const momentumBonus = 1.0 + (speed * 0.5);
+              const isCharge = speed > config.speed * 0.75;
 
-              if (target.health <= 0) {
-                 // Defer deletion
+              // Attack!
+              const rawDamage = config.damage * momentumBonus;
+              const damage = Math.max(1, rawDamage - target.defense);
+              
+              target.health -= damage;
+              unit.cooldownTimer = config.attackCooldown;
+
+              // --- MOMENTUM TRANSFER (Knockback) ---
+              // If charging, the attacker's momentum is transferred to the target BEFORE dampening.
+              if (isCharge) {
+                // Calculate momentum vector
+                const knockbackForce = 0.8; // Efficiency of transfer
+                const momentumX = unit.velocity.x * unit.mass * knockbackForce;
+                const momentumY = unit.velocity.y * unit.mass * knockbackForce;
+
+                // Apply to target (dv = p / m)
+                // Heavier targets (Tanks) will resist this much more than light targets.
+                target.velocity.x += momentumX / target.mass;
+                target.velocity.y += momentumY / target.mass;
               }
+              
+              // Impact Shock: Attacker loses momentum on hit
+              // If it was a high-momentum charge, the unit crashes and loses almost all speed.
+              // This prevents "shoving" heavy units continuously.
+              const impactDampening = isCharge ? 0.05 : 0.25;
+              unit.velocity.x *= impactDampening;
+              unit.velocity.y *= impactDampening;
+
+              // Sparks on hit - scale size/count with damage intensity
+              const particleSize = Math.max(2, Math.min(6, damage / 3));
+              const particleCount = Math.floor(damage / 3) + 2;
+              this.spawnParticles(target.position.x, target.position.y, '#ffffff', particleCount, particleSize);
           }
       }
       
@@ -267,32 +298,48 @@ export class SimulationEngine {
             const dist = Math.sqrt(distSq);
             const penetration = minDist - dist;
             
-            // Mass-based displacement
-            const totalMass = unit.mass + other.mass;
-            const ratio1 = other.mass / totalMass; // Move unit less if it has more mass (inverse logic, handled by ratio)
-            const ratio2 = unit.mass / totalMass; 
-            
-            // NOTE: Ratio logic: 
-            // If unit is Mass 10, other is Mass 1. Total = 11.
-            // unit moves: 1/11th of overlap.
-            // other moves: 10/11th of overlap.
-            // This is correct.
-
+            // Normalize collision normal
             const nx = dx / dist;
             const ny = dy / dist;
 
-            // Apply displacement
+            // --- POSITIONAL CORRECTION ---
+            // Move units apart so they don't overlap.
+            // Heavier units move less.
+            const totalMass = unit.mass + other.mass;
+            const ratio1 = other.mass / totalMass; // unit's share of movement (inverse mass)
+            const ratio2 = unit.mass / totalMass; 
+            
             unit.position.x += nx * penetration * ratio1;
             unit.position.y += ny * penetration * ratio1;
             other.position.x -= nx * penetration * ratio2;
             other.position.y -= ny * penetration * ratio2;
             
-            // Momentum/Impulse Transfer (Slight bump to velocity)
-            const impactFactor = 0.05;
-            unit.velocity.x += nx * impactFactor * ratio1;
-            unit.velocity.y += ny * impactFactor * ratio1;
-            other.velocity.x -= nx * impactFactor * ratio2;
-            other.velocity.y -= ny * impactFactor * ratio2;
+            // --- VELOCITY IMPULSE (BOUNCE) ---
+            // Only apply force if they are actually crashing into each other.
+            // If they are just touching (pushing), this value is small/zero, 
+            // preventing the "continuous sliding" effect.
+            
+            const relVx = other.velocity.x - unit.velocity.x;
+            const relVy = other.velocity.y - unit.velocity.y;
+            const velAlongNormal = relVx * nx + relVy * ny;
+
+            // Only resolve if objects are moving towards each other
+            if (velAlongNormal < 0) {
+                const restitution = 0.2; // Low elasticity (soft collisions)
+                
+                // Calculate impulse scalar
+                let j = -(1 + restitution) * velAlongNormal;
+                j /= (1 / unit.mass + 1 / other.mass);
+                
+                // Apply impulse
+                const impulseX = j * nx;
+                const impulseY = j * ny;
+                
+                unit.velocity.x -= impulseX * (1 / unit.mass);
+                unit.velocity.y -= impulseY * (1 / unit.mass);
+                other.velocity.x += impulseX * (1 / other.mass);
+                other.velocity.y += impulseY * (1 / other.mass);
+            }
           }
         }
       }
@@ -323,9 +370,6 @@ export class SimulationEngine {
     if (foundNearby) return bestTargetId;
 
     // Fallback: Global search (expensive, but necessary if no local targets)
-    // Only do this if the grid check failed.
-    // To prevent massive lag, maybe only check a random subset of units? 
-    // For now, simple closest search if local fails.
     let globalScanLimit = 20; // Only check 20 random units to save FPS
     let count = 0;
     

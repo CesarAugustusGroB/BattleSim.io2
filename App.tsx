@@ -16,7 +16,7 @@ function App() {
   // Selection State
   const [selectedTeam, setSelectedTeam] = useState<Team>(Team.BLUE);
   const [selectedUnit, setSelectedUnit] = useState<UnitType>(UnitType.SOLDIER);
-  const [spawnCount, setSpawnCount] = useState<number>(10);
+  const [spawnCount, setSpawnCount] = useState<number>(100);
 
   // Stats for Gemini
   const getFullStats = useCallback((): GameStateStats => {
@@ -24,8 +24,8 @@ function App() {
     const stats: GameStateStats = {
       redCount: 0,
       blueCount: 0,
-      redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0 },
-      blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0 }
+      redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 },
+      blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 }
     };
 
     for (const unit of sim.units.values()) {
@@ -38,6 +38,28 @@ function App() {
       }
     }
     return stats;
+  }, []);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      switch (e.key.toLowerCase()) {
+        case 'q': setSelectedTeam(Team.RED); break;
+        case 'w': setSelectedTeam(Team.BLUE); break;
+        case 'a': setSelectedUnit(UnitType.SOLDIER); break;
+        case 's': setSelectedUnit(UnitType.TANK); break;
+        case 'd': setSelectedUnit(UnitType.ARCHER); break;
+        case 'c': setSelectedUnit(UnitType.CAVALRY); break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // Loop
