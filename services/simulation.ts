@@ -98,7 +98,8 @@ export class SimulationEngine {
       state: UnitState.IDLE,
       selected: false,
       morale: 100, // Starts full
-      commandTarget: null
+      commandTarget: null,
+      cachedFlockingForce: { x: 0, y: 0 }
     };
     this.units.set(unit.id, unit);
   }
@@ -271,71 +272,88 @@ export class SimulationEngine {
 
 
       // Flocking forces (only consider nearby allies)
-      const neighbors = this.grid.getNearby(unit.position);
-      let cohesionCenter = { x: 0, y: 0 };
+      // STAGGERED UPDATE: Only calculate flocking every 2nd frame per unit
+      const unitHash = parseInt(unit.id.slice(-1), 36) || 0;
+      const shouldUpdateFlocking = (this.frame + unitHash) % 2 === 0;
+
       let separationForce = { x: 0, y: 0 };
-      let alignmentVel = { x: 0, y: 0 };
-      let allyCount = 0;
 
-      for (const nid of neighbors) {
-        if (nid === unit.id) continue;
-        const other = this.units.get(nid);
-        if (!other) continue;
+      if (shouldUpdateFlocking) {
+        const neighbors = this.grid.getNearby(unit.position);
+        let cohesionCenter = { x: 0, y: 0 };
+        let alignmentVel = { x: 0, y: 0 };
+        let allyCount = 0;
+        let calculatedSeparation = { x: 0, y: 0 };
 
-        const dx = other.position.x - unit.position.x;
-        const dy = other.position.y - unit.position.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        for (const nid of neighbors) {
+          if (nid === unit.id) continue;
+          const other = this.units.get(nid);
+          if (!other) continue;
 
-        if (other.team !== unit.team) {
-          // Repel from enemies slightly to avoid clipping through them
-          if (dist < 30) {
-            const repelStrength = (30 - dist) / 30;
-            separationForce.x -= (dx / dist) * repelStrength * 1.0;
-            separationForce.y -= (dy / dist) * repelStrength * 1.0;
+          const dx = other.position.x - unit.position.x;
+          const dy = other.position.y - unit.position.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (other.team !== unit.team) {
+            // Repel from enemies slightly to avoid clipping through them
+            if (dist < 30) {
+              const repelStrength = (30 - dist) / 30;
+              calculatedSeparation.x -= (dx / dist) * repelStrength * 1.0;
+              calculatedSeparation.y -= (dy / dist) * repelStrength * 1.0;
+            }
+            continue;
           }
-          continue;
+
+          if (dist < 80) { // Flocking radius
+            allyCount++;
+
+            // Cohesion & Alignment
+            cohesionCenter.x += other.position.x;
+            cohesionCenter.y += other.position.y;
+            alignmentVel.x += other.velocity.x;
+            alignmentVel.y += other.velocity.y;
+
+            // Separation from allies
+            if (dist < 25 && dist > 0.1) {
+              const repelStrength = (25 - dist) / 25;
+              calculatedSeparation.x -= (dx / dist) * repelStrength * 1.5;
+              calculatedSeparation.y -= (dy / dist) * repelStrength * 1.5;
+            }
+          }
         }
 
-        if (dist < 80) { // Flocking radius
-          allyCount++;
+        // Apply flocking forces
+        let newFlockingForce = { x: 0, y: 0 };
 
-          // Cohesion & Alignment
-          cohesionCenter.x += other.position.x;
-          cohesionCenter.y += other.position.y;
-          alignmentVel.x += other.velocity.x;
-          alignmentVel.y += other.velocity.y;
+        if (allyCount > 0 && unit.state !== UnitState.MOVING) {
+          // Cohesion
+          cohesionCenter.x /= allyCount;
+          cohesionCenter.y /= allyCount;
+          const cohesionDir = normalize({
+            x: cohesionCenter.x - unit.position.x,
+            y: cohesionCenter.y - unit.position.y
+          });
+          newFlockingForce.x += cohesionDir.x * 0.1;
+          newFlockingForce.y += cohesionDir.y * 0.1;
 
-          // Separation from allies
-          if (dist < 25 && dist > 0.1) {
-            const repelStrength = (25 - dist) / 25;
-            separationForce.x -= (dx / dist) * repelStrength * 1.5;
-            separationForce.y -= (dy / dist) * repelStrength * 1.5;
-          }
+          // Alignment
+          alignmentVel.x /= allyCount;
+          alignmentVel.y /= allyCount;
+          newFlockingForce.x += alignmentVel.x * 0.05;
+          newFlockingForce.y += alignmentVel.y * 0.05;
         }
+
+        unit.cachedFlockingForce = {
+          x: newFlockingForce.x + calculatedSeparation.x,
+          y: newFlockingForce.y + calculatedSeparation.y
+        };
       }
 
-      // Apply flocking forces
-      if (allyCount > 0 && unit.state !== UnitState.MOVING) {
-        // Cohesion (reduced when moving/defending strongly)
-        cohesionCenter.x /= allyCount;
-        cohesionCenter.y /= allyCount;
-        const cohesionDir = normalize({
-          x: cohesionCenter.x - unit.position.x,
-          y: cohesionCenter.y - unit.position.y
-        });
-        force.x += cohesionDir.x * 0.1;
-        force.y += cohesionDir.y * 0.1;
+      // Always apply cached force (smoothed over frames)
+      force.x += unit.cachedFlockingForce.x;
+      force.y += unit.cachedFlockingForce.y;
 
-        // Alignment
-        alignmentVel.x /= allyCount;
-        alignmentVel.y /= allyCount;
-        force.x += alignmentVel.x * 0.05;
-        force.y += alignmentVel.y * 0.05;
-      }
 
-      // Always apply separation
-      force.x += separationForce.x;
-      force.y += separationForce.y;
 
       // Apply Force to Velocity using unit's acceleration
       unit.velocity.x += force.x * config.acceleration;

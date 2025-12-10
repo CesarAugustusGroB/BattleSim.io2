@@ -33,9 +33,7 @@ export const Controls: React.FC<ControlsProps> = ({
   blueStrategy,
   onStrategyChange
 }) => {
-  const toggleTeam = () => {
-    setSelectedTeam(selectedTeam === Team.RED ? Team.BLUE : Team.RED);
-  };
+
 
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-neutral-900/90 backdrop-blur-md border-t border-neutral-700 p-4 text-white z-10 flex flex-wrap items-center justify-between gap-4">
@@ -63,12 +61,19 @@ export const Controls: React.FC<ControlsProps> = ({
       {/* Spawn Controls */}
       <div className="flex flex-1 justify-center gap-6 items-center">
         {/* Team Select */}
-        <div className="flex bg-neutral-800 rounded-lg p-1">
+        <div className="flex bg-neutral-800 rounded-lg p-1 gap-1">
           <button
-            onClick={toggleTeam}
-            className={`px-4 py-2 rounded-md font-bold transition-all w-32 ${selectedTeam === Team.RED ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}`}
+            onClick={() => setSelectedTeam(Team.RED)}
+            className={`px-4 py-2 rounded-md font-bold transition-all ${selectedTeam === Team.RED ? 'bg-red-600 text-white' : 'bg-transparent text-neutral-500 hover:text-white'}`}
           >
-            {selectedTeam === Team.RED ? 'RED (Q)' : 'BLUE (Q)'}
+            RED (Q)
+          </button>
+          <div className="w-px bg-neutral-700 my-1"></div>
+          <button
+            onClick={() => setSelectedTeam(Team.BLUE)}
+            className={`px-4 py-2 rounded-md font-bold transition-all ${selectedTeam === Team.BLUE ? 'bg-blue-600 text-white' : 'bg-transparent text-neutral-500 hover:text-white'}`}
+          >
+            BLUE
           </button>
         </div>
 

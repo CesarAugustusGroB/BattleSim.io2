@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { SimulationEngine } from '../services/simulation';
+import { SpriteCache } from '../services/SpriteCache';
 import { WORLD_WIDTH, WORLD_HEIGHT, TEAM_COLORS, UNIT_CONFIGS } from '../constants';
-import { Team, Vector2, UnitType } from '../types';
+import { Team, UnitType, Unit } from '../types';
+import { Application, Container, Sprite, Graphics, Text, Texture } from 'pixi.js';
 
 interface BattleCanvasProps {
   simulation: SimulationEngine;
@@ -9,14 +11,17 @@ interface BattleCanvasProps {
 }
 
 export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelectPos }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Camera State
-  const cameraRef = useRef({ x: 0, y: 0, zoom: 0.5 });
-  const isDragging = useRef(false);
-  const lastMouse = useRef({ x: 0, y: 0 });
+  const appRef = useRef<Application | null>(null);
   const [cursorStyle, setCursorStyle] = useState('cursor-crosshair');
+
+  // Keep callback fresh for event listeners
+  const onSelectPosRef = useRef(onSelectPos);
+  useEffect(() => { onSelectPosRef.current = onSelectPos; }, [onSelectPos]);
+
+  // We track visual objects mapped to simulation IDs
+  const spriteMap = useRef<Map<string, Container>>((new Map())); // Unit Container (Sprite + Shadow + HP)
+  const particleGraphics = useRef<Graphics | null>(null); // Single graphics for all particles (batching)
 
   // Keyboard State
   const keysPressed = useRef<Set<string>>(new Set());
@@ -35,305 +40,329 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
     };
   }, []);
 
-  const getWorldPos = (clientX: number, clientY: number) => {
-    if (!canvasRef.current || !containerRef.current) return { x: 0, y: 0 };
-    const rect = canvasRef.current.getBoundingClientRect();
-    const cam = cameraRef.current;
-
-    const screenX = clientX - rect.left;
-    const screenY = clientY - rect.top;
-
-    return {
-      x: (screenX - rect.width / 2) / cam.zoom + cam.x,
-      y: (screenY - rect.height / 2) / cam.zoom + cam.y
-    };
-  };
-
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for no transparency on bg
-    if (!ctx) return;
+    if (!containerRef.current) return;
 
-    let animationFrameId: number;
+    // Track mounted state to handle async init
+    let isMounted = true;
+    let app: Application | null = null;
 
-    const render = () => {
-      if (!ctx || !canvas) return;
+    const initPixi = async () => {
+      // 1. Initialize Pixi App (Async in v8)
+      const _app = new Application();
+      await _app.init({
+        resizeTo: containerRef.current!, // strict null check handled by early return
+        backgroundColor: 0x1a1a1a,
+        antialias: true,
+        autoDensity: true,
+        resolution: window.devicePixelRatio || 1,
+      });
 
-      // Handle Resize
-      if (containerRef.current) {
-        const { width, height } = containerRef.current.getBoundingClientRect();
-        if (canvas.width !== width || canvas.height !== height) {
-          canvas.width = width;
-          canvas.height = height;
-        }
+      if (!isMounted) {
+        _app.destroy();
+        return;
       }
 
-      const cam = cameraRef.current;
+      app = _app;
+      appRef.current = app;
 
-      // Keyboard Panning
-      const panSpeed = 15 / cam.zoom;
-      if (keysPressed.current.has('KeyW') || keysPressed.current.has('ArrowUp')) cam.y -= panSpeed;
-      if (keysPressed.current.has('KeyS') || keysPressed.current.has('ArrowDown')) cam.y += panSpeed;
-      if (keysPressed.current.has('KeyA') || keysPressed.current.has('ArrowLeft')) cam.x -= panSpeed;
-      if (keysPressed.current.has('KeyD') || keysPressed.current.has('ArrowRight')) cam.x += panSpeed;
+      // We need to append view. In v8, use app.canvas
+      containerRef.current!.appendChild(app.canvas);
 
-      // Clear Screen
-      ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // 2. Setup Scene Graph
+      const worldStage = new Container();
+      app.stage.addChild(worldStage);
 
-      ctx.save();
-      // Apply Camera Transform
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.scale(cam.zoom, cam.zoom);
-      ctx.translate(-cam.x, -cam.y);
+      // Layers
+      const gridLayer = new Graphics();
+      const shadowLayer = new Container();
+      const unitLayer = new Container();
+      const effectLayer = new Container(); // Particles & Projectiles
+      const uiLayer = new Container(); // Selection boxes etc
 
-      // Draw World Bounds
-      ctx.strokeStyle = '#333';
-      ctx.lineWidth = 5;
-      ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      worldStage.addChild(gridLayer);
+      worldStage.addChild(shadowLayer); // Shadows below units
+      worldStage.addChild(unitLayer);
+      worldStage.addChild(effectLayer);
+      worldStage.addChild(uiLayer);
 
-      // Draw Grid Lines (Optimization: only draw visible lines?)
-      ctx.strokeStyle = '#262626';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
+      // 3. Draw Static Grid
+      // v8 deprecated lineStyle(width, color), use stroke({ width, color }) or just stroke(color) if width is set via SetStrokeStyle?
+      // Actually v8 is somewhat backward compatible but stroke() is preferred.
+      // Let's stick to standard v7 syntax if it still works, or update.
+      // v8 Graphics API is: graphics.moveTo(..).lineTo(..).stroke({ width: 2, color: 0x262626 })
+      gridLayer.moveTo(0, 0); // Reset context if needed, but for new graphics it's fine.
+
+      // Draw Loop for Grid
+      // To be safe with v8, let's use the new API or standard one. 
+      // For simplicity and compatibility, we will assume standard drawing commands work or use the new stroke method at the end.
+
+      // v8 pattern: Build geometry, then stroke/fill.
       for (let x = 0; x <= WORLD_WIDTH; x += 100) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, WORLD_HEIGHT);
+        gridLayer.moveTo(x, 0).lineTo(x, WORLD_HEIGHT);
       }
       for (let y = 0; y <= WORLD_HEIGHT; y += 100) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(WORLD_WIDTH, y);
+        gridLayer.moveTo(0, y).lineTo(WORLD_WIDTH, y);
       }
-      ctx.stroke();
+      gridLayer.stroke({ width: 2, color: 0x262626 });
 
-      // Render Units
-      for (const unit of simulation.units.values()) {
-        const config = UNIT_CONFIGS[unit.type];
-        const colors = unit.team === Team.BLUE ? TEAM_COLORS.BLUE : TEAM_COLORS.RED;
+      // World Border
+      gridLayer.rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      gridLayer.stroke({ width: 5, color: 0x333333 });
 
-        // Draw Shadow (offset for depth)
-        ctx.beginPath();
-        ctx.arc(unit.position.x + 3, unit.position.y + 3, config.radius * 0.9, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-        ctx.fill();
 
-        // Draw Body
-        ctx.beginPath();
-        ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
-        ctx.fillStyle = colors.primary;
-        ctx.fill();
-        ctx.strokeStyle = colors.secondary;
-        ctx.lineWidth = 2;
-        ctx.stroke();
+      // 4. Setup Particle Graphics
+      const pGraphics = new Graphics();
+      effectLayer.addChild(pGraphics);
+      particleGraphics.current = pGraphics;
 
-        // Draw Facing Direction (arrow/wedge)
-        const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
-        if (speed > 0.1) {
-          const angle = Math.atan2(unit.velocity.y, unit.velocity.x);
-          ctx.save();
-          ctx.translate(unit.position.x, unit.position.y);
-          ctx.rotate(angle);
 
-          // Draw direction indicator
-          ctx.beginPath();
-          ctx.moveTo(config.radius * 0.8, 0);
-          ctx.lineTo(config.radius * 0.3, -config.radius * 0.4);
-          ctx.lineTo(config.radius * 0.3, config.radius * 0.4);
-          ctx.closePath();
-          ctx.fillStyle = colors.secondary;
-          ctx.fill();
-          ctx.restore();
-        }
+      // 5. Render Loop
+      app.ticker.add(() => {
+        // A. Sync Units
+        const units = simulation.units;
+        const processedIds = new Set<string>();
 
-        // Draw Health Bar (animated smooth)
-        if (unit.health < unit.maxHealth) {
-          const hpPct = Math.max(0, unit.health / unit.maxHealth);
-          const barWidth = config.radius * 2.5;
-          const barHeight = 4;
-          const barY = unit.position.y - config.radius - 10;
+        // Update/Create
+        for (const unit of units.values()) {
+          processedIds.add(unit.id);
+          let visual = spriteMap.current.get(unit.id);
 
-          // Background
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-          ctx.fillRect(unit.position.x - barWidth / 2, barY, barWidth, barHeight);
-
-          // Health gradient
-          const gradient = ctx.createLinearGradient(
-            unit.position.x - barWidth / 2, barY,
-            unit.position.x + barWidth / 2, barY
-          );
-          if (hpPct > 0.5) {
-            gradient.addColorStop(0, '#22c55e');
-            gradient.addColorStop(1, '#4ade80');
-          } else if (hpPct > 0.25) {
-            gradient.addColorStop(0, '#eab308');
-            gradient.addColorStop(1, '#facc15');
-          } else {
-            gradient.addColorStop(0, '#dc2626');
-            gradient.addColorStop(1, '#ef4444');
+          // Create if missing
+          if (!visual) {
+            visual = createUnitVisual(unit);
+            unitLayer.addChild(visual);
+            spriteMap.current.set(unit.id, visual);
           }
-          ctx.fillStyle = gradient;
-          ctx.fillRect(unit.position.x - barWidth / 2, barY, barWidth * hpPct, barHeight);
+
+          // Update Transform
+          visual.position.set(unit.position.x, unit.position.y);
+
+          // Rotation (Child 1 is the body: Shadow=0, Body=1, HP=2)
+          const body = visual.children[1] as Sprite;
+          // Wait, in createUnitVisual shadows are 0, body is 1. Correct.
+
+          const speedSq = unit.velocity.x ** 2 + unit.velocity.y ** 2;
+          if (speedSq > 0.01) {
+            visual.rotation = 0;
+            body.rotation = Math.atan2(unit.velocity.y, unit.velocity.x);
+          }
+
+          // Update Health Bar (Child 2)
+          const hpBar = visual.children[2] as Graphics;
+          updateHealthBar(hpBar, unit);
         }
 
-        // Draw Attack Lines / Projectiles
-        if (unit.targetId && unit.cooldownTimer > config.attackCooldown - 5) {
-          const target = simulation.units.get(unit.targetId);
-          if (target) {
-            if (unit.type === UnitType.ARCHER) {
-              // Draw arrow projectile
-              const dx = target.position.x - unit.position.x;
-              const dy = target.position.y - unit.position.y;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              const t = 1 - (unit.cooldownTimer - (config.attackCooldown - 5)) / 5;
+        // Cleanup Dead Units
+        for (const [id, visual] of spriteMap.current) {
+          if (!processedIds.has(id)) {
+            visual.destroy({ children: true }); // cleanup
+            spriteMap.current.delete(id);
+          }
+        }
 
-              const arrowX = unit.position.x + dx * t;
-              const arrowY = unit.position.y + dy * t;
-              const angle = Math.atan2(dy, dx);
+        // B. Render Particles & Projectiles
+        pGraphics.clear();
 
-              ctx.save();
-              ctx.translate(arrowX, arrowY);
-              ctx.rotate(angle);
+        // Particles
+        for (const p of simulation.particles) {
+          pGraphics.circle(p.position.x, p.position.y, p.size);
+          pGraphics.fill({ color: stringToHex(p.color), alpha: p.life / p.maxLife });
+        }
 
-              // Arrow shape
-              ctx.beginPath();
-              ctx.moveTo(8, 0);
-              ctx.lineTo(-4, -3);
-              ctx.lineTo(-2, 0);
-              ctx.lineTo(-4, 3);
-              ctx.closePath();
-              ctx.fillStyle = colors.bullet;
-              ctx.fill();
-              ctx.restore();
-            } else {
-              // Melee attack flash
-              ctx.beginPath();
-              ctx.moveTo(unit.position.x, unit.position.y);
-              ctx.lineTo(target.position.x, target.position.y);
-              ctx.strokeStyle = colors.bullet;
-              ctx.lineWidth = 3;
-              ctx.globalAlpha = 0.7;
-              ctx.stroke();
-              ctx.globalAlpha = 1.0;
+        // Projectiles (Arrows/Beams)
+        for (const unit of units.values()) {
+          const config = UNIT_CONFIGS[unit.type];
+          if (unit.targetId && unit.cooldownTimer > config.attackCooldown - 5) {
+            const target = simulation.units.get(unit.targetId);
+            if (target) {
+              const color = unit.team === Team.BLUE ? TEAM_COLORS.BLUE.bullet : TEAM_COLORS.RED.bullet;
+
+              if (unit.type === UnitType.ARCHER) {
+                // Arrow logic
+                const t = 1 - (unit.cooldownTimer - (config.attackCooldown - 5)) / 5;
+                const dx = target.position.x - unit.position.x;
+                const dy = target.position.y - unit.position.y;
+                const arrowX = unit.position.x + dx * t;
+                const arrowY = unit.position.y + dy * t;
+
+                pGraphics.circle(arrowX, arrowY, 3);
+                pGraphics.fill(stringToHex(color));
+              } else {
+                // Melee Sweep
+                pGraphics.moveTo(unit.position.x, unit.position.y);
+                pGraphics.lineTo(target.position.x, target.position.y);
+                pGraphics.stroke({ width: 2, color: stringToHex(color) });
+              }
             }
           }
         }
-      }
 
-      // Render Particles with glow
-      for (const p of simulation.particles) {
-        const alpha = p.life / p.maxLife;
-        ctx.globalAlpha = alpha;
+        // Keyboard Panning
+        const stage = worldStage; // Alias for clarity
+        const panSpeed = 15 / stage.scale.x;
+        if (keysPressed.current.has('KeyW') || keysPressed.current.has('ArrowUp')) stage.y += panSpeed;
+        if (keysPressed.current.has('KeyS') || keysPressed.current.has('ArrowDown')) stage.y -= panSpeed;
+        if (keysPressed.current.has('KeyA') || keysPressed.current.has('ArrowLeft')) stage.x += panSpeed;
+        if (keysPressed.current.has('KeyD') || keysPressed.current.has('ArrowRight')) stage.x -= panSpeed;
 
-        // Glow effect
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 8;
+      });
 
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.position.x, p.position.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1.0;
-      }
-
-      ctx.restore();
-      animationFrameId = requestAnimationFrame(render);
+      // Camera State in Pixi
+      worldStage.position.set(app.screen.width / 2, app.screen.height / 2);
+      worldStage.scale.set(0.5); // Initial Zoom
     };
 
-    render();
+    initPixi();
 
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [simulation]); // removed currentDrag dependency
+    return () => {
+      isMounted = false;
+      if (app) {
+        app.destroy({ removeView: true }, { children: true });
+      }
+    };
+  }, []);
 
-  // Mouse Handlers for Camera and Spawning
+  // Helpers
+  const createUnitVisual = (unit: Unit): Container => {
+    const container = new Container();
 
-  // use non-passive event listener for wheel to allows preventDefault
+    const config = UNIT_CONFIGS[unit.type];
+
+    // 1. Shadow (Child 0)
+    const shadowTex = SpriteCache.getShadowTexture();
+    const shadow = new Sprite(shadowTex);
+    shadow.anchor.set(0.5);
+    const shadowSize = config.radius * 2.5 / 64; // Scale relative to 64px tex
+    shadow.scale.set(shadowSize);
+    shadow.alpha = 0.5;
+    shadow.position.set(3, 3); // offset
+    container.addChild(shadow);
+
+    // 2. Body (Child 1)
+    const tex = SpriteCache.getTexture(unit.type, unit.team);
+    const sprite = new Sprite(tex);
+    sprite.anchor.set(0.5);
+    // Sprite is pre-sized in cache, no scale needed usually
+    container.addChild(sprite);
+
+    // 3. Health Bar (Child 2)
+    const hpBar = new Graphics();
+    // Draw initial state
+    hpBar.position.set(0, -config.radius - 8);
+    container.addChild(hpBar);
+
+    return container;
+  };
+
+  const updateHealthBar = (g: Graphics, unit: Unit) => {
+    g.clear();
+    if (unit.health < unit.maxHealth) {
+      const pct = unit.health / unit.maxHealth;
+      const w = 24;
+      const h = 4;
+
+      g.rect(-w / 2, 0, w, h);
+      g.fill({ color: 0x000000, alpha: 0.5 });
+
+      const color = pct > 0.5 ? 0x22c55e : (pct > 0.25 ? 0xeab308 : 0xef4444);
+      g.rect(-w / 2, 0, w * pct, h);
+      g.fill({ color: color });
+    }
+  };
+
+  const stringToHex = (str: string): number => {
+    if (str.startsWith('#')) return parseInt(str.slice(1), 16);
+    return 0xffffff;
+  }
+
+  // Input Handling (Refs because Event Listeners capture closure)
+  const isDragging = useRef(false);
+  const lastMouse = useRef({ x: 0, y: 0 });
+
+  // Native DOM Listeners for Input (easier than Pixi Interaction for full screen pan)
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const el = containerRef.current;
+    if (!el) return;
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const cam = cameraRef.current;
+      if (!appRef.current) return;
+      const stage = appRef.current.stage.children[0] as Container; // worldStage
 
-      // Smart Zoom: Zoom towards mouse cursor
-      const rect = canvas.getBoundingClientRect();
+      const zoomSensitivity = 0.001;
+      const oldZoom = stage.scale.x;
+      const newZoom = Math.min(Math.max(0.1, oldZoom - e.deltaY * zoomSensitivity), 4);
+
+      // Zoom towards mouse
+      const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      // World pos before zoom
-      const worldBefore = {
-        x: (mouseX - rect.width / 2) / cam.zoom + cam.x,
-        y: (mouseY - rect.height / 2) / cam.zoom + cam.y
-      };
+      // World pos before
+      const worldX = (mouseX - stage.x) / oldZoom;
+      const worldY = (mouseY - stage.y) / oldZoom;
 
-      const zoomSensitivity = 0.001;
-      const newZoom = Math.min(Math.max(0.1, cam.zoom - e.deltaY * zoomSensitivity), 3);
-      cam.zoom = newZoom;
+      stage.scale.set(newZoom);
 
-      // Calculate new cam position
-      cam.x = worldBefore.x - (mouseX - rect.width / 2) / newZoom;
-      cam.y = worldBefore.y - (mouseY - rect.height / 2) / newZoom;
+      // Adjust pos to keep worldX under mouse
+      stage.x = mouseX - worldX * newZoom;
+      stage.y = mouseY - worldY * newZoom;
     };
 
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 || e.altKey) {
+        e.preventDefault();
+        isDragging.current = true;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+        setCursorStyle('cursor-grabbing');
+      } else if (e.button === 0) {
+        // Spawn
+        if (!appRef.current) return;
+        const stage = appRef.current.stage.children[0] as Container;
+        const rect = el.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    // Middle Click or Alt+Click to pan
-    if (e.button === 1 || e.altKey) {
-      e.preventDefault();
-      isDragging.current = true;
-      lastMouse.current = { x: e.clientX, y: e.clientY };
-      setCursorStyle('cursor-grabbing');
-      return;
-    }
+        const worldX = (mouseX - stage.x) / stage.scale.x;
+        const worldY = (mouseY - stage.y) / stage.scale.y;
+        onSelectPosRef.current(worldX, worldY);
+      }
+    };
 
-    // Left Click - Spawn Unit
-    if (e.button === 0) {
-      const worldPos = getWorldPos(e.clientX, e.clientY);
-      onSelectPos(worldPos.x, worldPos.y);
-    }
+    const onMouseMove = (e: MouseEvent) => {
+      if (isDragging.current && appRef.current) {
+        const stage = appRef.current.stage.children[0] as Container;
+        const dx = e.clientX - lastMouse.current.x;
+        const dy = e.clientY - lastMouse.current.y;
+        stage.x += dx;
+        stage.y += dy;
+        lastMouse.current = { x: e.clientX, y: e.clientY };
+      }
+    };
 
-    // Right Click - Currently does nothing (removed Selection logic)
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (isDragging.current) {
-      // Pan Camera
-      const dx = e.clientX - lastMouse.current.x;
-      const dy = e.clientY - lastMouse.current.y;
-
-      cameraRef.current.x -= dx / cameraRef.current.zoom;
-      cameraRef.current.y -= dy / cameraRef.current.zoom;
-
-      lastMouse.current = { x: e.clientX, y: e.clientY };
-    }
-  };
-
-  const handleMouseUp = (e: React.MouseEvent) => {
-    if (isDragging.current) {
+    const onMouseUp = () => {
       isDragging.current = false;
       setCursorStyle('cursor-crosshair');
-    }
-  };
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
 
   return (
     <div ref={containerRef} className={`w-full h-full relative overflow-hidden bg-black ${cursorStyle}`}>
-      <canvas
-        ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onContextMenu={(e) => e.preventDefault()}
-        className="block"
-      />
-      <div className="absolute top-4 left-4 text-white/50 text-xs select-none pointer-events-none">
-        Left-click to Spawn • Middle-click/WASD to Pan • Scroll to Zoom
+      <div className="absolute top-4 left-4 text-white/50 text-xs select-none pointer-events-none z-10">
+        PixiJS Mode • Left-click to Spawn • Middle-click/Alt+Drag to Pan
       </div>
     </div>
   );

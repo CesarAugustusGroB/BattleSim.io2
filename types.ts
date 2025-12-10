@@ -60,6 +60,7 @@ export interface Unit {
   selected: boolean;
   morale: number;
   commandTarget: Vector2 | null;
+  cachedFlockingForce: Vector2;
 }
 
 export interface Particle {
