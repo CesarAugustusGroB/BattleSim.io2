@@ -4,49 +4,50 @@ import { WORLD_WIDTH, WORLD_HEIGHT, GRID_SIZE, UNIT_CONFIGS } from '../constants
 // Utility for unique IDs
 const uuid = () => Math.random().toString(36).substring(2, 9);
 
-// Simple Vector Math
-const distSq = (v1: Vector2, v2: Vector2) => (v1.x - v2.x) ** 2 + (v1.y - v2.y) ** 2;
-const normalize = (v: Vector2): Vector2 => {
-  const mag = Math.sqrt(v.x * v.x + v.y * v.y);
-  return mag === 0 ? { x: 0, y: 0 } : { x: v.x / mag, y: v.y / mag };
-};
+// Spatial Partitioning Grid - Optimized to INT keys
+// Hash Formula: y * 1000 + x (Assuming grid width < 1000)
+const GRID_COLS = Math.ceil(WORLD_WIDTH / GRID_SIZE);
 
-// Spatial Partitioning Grid
 class SpatialGrid {
-  cells: Map<string, string[]> = new Map();
+  cells: Map<number, string[]> = new Map();
 
   clear() {
     this.cells.clear();
   }
 
-  getKey(pos: Vector2): string {
-    const gx = Math.floor(pos.x / GRID_SIZE);
-    const gy = Math.floor(pos.y / GRID_SIZE);
-    return `${gx},${gy}`;
+  // Integer Key Generation (Garbage Free)
+  getKey(x: number, y: number): number {
+    const gx = Math.floor(x / GRID_SIZE);
+    const gy = Math.floor(y / GRID_SIZE);
+    return gy * GRID_COLS + gx;
   }
 
   add(unit: Unit) {
-    const key = this.getKey(unit.position);
-    if (!this.cells.has(key)) {
-      this.cells.set(key, []);
+    const key = this.getKey(unit.position.x, unit.position.y);
+    let cell = this.cells.get(key);
+    if (!cell) {
+      cell = [];
+      this.cells.set(key, cell);
     }
-    this.cells.get(key)!.push(unit.id);
+    cell.push(unit.id);
   }
 
   // Get units in current and adjacent cells
-  getNearby(pos: Vector2): string[] {
+  // alloc-free iteration would be better, but returning array is OK for now
+  getNearby(x: number, y: number): string[] {
     const ids: string[] = [];
-    const gx = Math.floor(pos.x / GRID_SIZE);
-    const gy = Math.floor(pos.y / GRID_SIZE);
+    const gx = Math.floor(x / GRID_SIZE);
+    const gy = Math.floor(y / GRID_SIZE);
 
-    for (let x = gx - 1; x <= gx + 1; x++) {
-      for (let y = gy - 1; y <= gy + 1; y++) {
-        const key = `${x},${y}`;
+    // Unroll loop for speed (3x3 grid)
+    for (let cy = gy - 1; cy <= gy + 1; cy++) {
+      const rowOffset = cy * GRID_COLS;
+      for (let cx = gx - 1; cx <= gx + 1; cx++) {
+        const key = rowOffset + cx;
         const cell = this.cells.get(key);
         if (cell) {
-          for (const id of cell) {
-            ids.push(id);
-          }
+          // Push individual items to avoid spread operator overhead if array is huge
+          for (let i = 0; i < cell.length; i++) ids.push(cell[i]);
         }
       }
     }
@@ -56,6 +57,8 @@ class SpatialGrid {
 
 export class SimulationEngine {
   units: Map<string, Unit> = new Map();
+  unitsArray: Unit[] = []; // Iteration Cache
+
   particles: Particle[] = [];
   grid: SpatialGrid = new SpatialGrid();
   teamStrategies: Map<Team, TeamStrategy> = new Map([
@@ -70,6 +73,7 @@ export class SimulationEngine {
 
   reset() {
     this.units.clear();
+    this.unitsArray = [];
     this.particles = [];
     this.grid.clear();
     this.frame = 0;
@@ -102,6 +106,7 @@ export class SimulationEngine {
       cachedFlockingForce: { x: 0, y: 0 }
     };
     this.units.set(unit.id, unit);
+    this.unitsArray.push(unit);
   }
 
   spawnFormation(centerX: number, centerY: number, team: Team, type: UnitType, count: number) {
@@ -133,322 +138,247 @@ export class SimulationEngine {
     }
   }
 
-  issueCommand(unitIds: string[], type: 'MOVE' | 'ATTACK' | 'DEFEND' | 'STOP', targetPos?: Vector2) {
-    // Basic formation offset logic applied per unit relative to centroid?
-    // For now, nice and simple: random jitter to prevent stacking
-
-    for (const id of unitIds) {
-      const unit = this.units.get(id);
-      if (!unit) continue;
-
-      switch (type) {
-        case 'MOVE':
-          if (targetPos) {
-            unit.state = UnitState.MOVING;
-            unit.commandTarget = { ...targetPos };
-            // Simple jitter to prevent perfect stacking
-            const offset = { x: (Math.random() - 0.5) * 60, y: (Math.random() - 0.5) * 60 };
-            unit.commandTarget.x += offset.x;
-            unit.commandTarget.y += offset.y;
-
-            unit.targetId = null; // Forget combat target while forcibly moving
-          }
-          break;
-        case 'STOP':
-          unit.state = UnitState.IDLE;
-          unit.commandTarget = null;
-          unit.velocity = { x: 0, y: 0 };
-          break;
-        case 'DEFEND':
-          unit.state = UnitState.DEFENDING;
-          unit.commandTarget = null;
-          break;
-        case 'ATTACK':
-          unit.state = UnitState.ATTACKING;
-          // Attack move logic would go here (move until enemy seen)
-          if (targetPos) {
-            unit.commandTarget = { ...targetPos };
-          }
-          break;
-      }
-    }
-  }
-
   update() {
     this.frame++;
 
     // 1. Rebuild Grid
     this.grid.clear();
-    for (const unit of this.units.values()) {
-      this.grid.add(unit);
+    // Optimization: Loop array instead of iterator
+    const len = this.unitsArray.length;
+    for (let i = 0; i < len; i++) {
+      this.grid.add(this.unitsArray[i]);
     }
 
     const deadUnits: string[] = [];
 
     // 2. Unit Logic
-    for (const unit of this.units.values()) {
+    for (let i = 0; i < len; i++) {
+      const unit = this.unitsArray[i];
       const config = UNIT_CONFIGS[unit.type];
 
-      // A. Target Finding (Throttled: check every 15 frames + random offset)
-      // If MOVING, don't auto-acquire targets (force move) - unless we add Attack Move later
+      // A. Target Finding (Throttled: check every 15 frames)
       if (unit.state !== UnitState.MOVING) {
-        if (!unit.targetId || this.frame % 15 === parseInt(unit.id.slice(-1), 36) % 15) {
+        // Optimization: Simple integer modulus
+        // Assuming unit.id last char is somewhat random, charCodeAt is fast
+        const idHash = unit.id.charCodeAt(unit.id.length - 1);
+        if (!unit.targetId || (this.frame + idHash) % 15 === 0) {
           unit.targetId = this.findTarget(unit);
         }
       }
 
       // B. Movement Forces
-      let force = { x: 0, y: 0 };
+      let forceX = 0;
+      let forceY = 0;
 
       // State-Based Steering
       if (unit.state === UnitState.MOVING && unit.commandTarget) {
-        // Move towards command target
         const dx = unit.commandTarget.x - unit.position.x;
         const dy = unit.commandTarget.y - unit.position.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         if (dist < unit.radius + 10) {
-          // Reached target
           unit.state = UnitState.IDLE;
           unit.commandTarget = null;
         } else {
-          const dir = normalize({ x: dx, y: dy });
-          const seekWeight = 2.5; // Strong pull to destination
-          force.x += dir.x * seekWeight;
-          force.y += dir.y * seekWeight;
+          // Normalize inline
+          const idist = 1 / dist;
+          const dirX = dx * idist;
+          const dirY = dy * idist;
+          const seekWeight = 2.5;
+          forceX += dirX * seekWeight;
+          forceY += dirY * seekWeight;
         }
       }
-      // State & Strategy Based Movement Logic
+
       const strategy = this.teamStrategies.get(unit.team) || TeamStrategy.ATTACK;
 
-      // Override state based on strategy if IDLE
-      if (unit.state === UnitState.IDLE) {
-        // In Attack Mode, idle units should seek combat more aggressively
-      }
-
       if (unit.targetId) {
-        // Combat Seek
         const target = this.units.get(unit.targetId);
         if (target) {
           const dx = target.position.x - unit.position.x;
           const dy = target.position.y - unit.position.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const dir = normalize({ x: dx, y: dy });
+          const distSq = dx * dx + dy * dy;
+          const dist = Math.sqrt(distSq);
 
-          // Strategy: DEFEND
+          const idist = dist > 0 ? 1 / dist : 0;
+          const dirX = dx * idist;
+          const dirY = dy * idist;
+
           if (strategy === TeamStrategy.DEFEND) {
-            // Only chase if very close, otherwise hold
-            if (dist > 300) {
-              // Too far, don't chase, just drop target if we had one (soft disengage)
-              // But for now, just don't move
-            } else if (dist < config.range) {
-              // In range, hold
-            } else {
-              // In engage range but out of fire range (e.g. 200px)
-              // Move slowly?
-              force.x += dir.x * 0.5;
-              force.y += dir.y * 0.5;
+            if (dist > 300) { } // Hold
+            else if (dist < config.range) { } // Hold
+            else {
+              forceX += dirX * 0.5;
+              forceY += dirY * 0.5;
             }
-          }
-          // Strategy: ATTACK (Standard Aggressive)
-          else {
+          } else {
+            // ATTACK
             if (unit.type === UnitType.ARCHER) {
               if (dist < config.range * 0.8) {
-                force.x -= dir.x * 0.8;
-                force.y -= dir.y * 0.8;
+                forceX -= dirX * 0.8;
+                forceY -= dirY * 0.8;
               } else if (dist > config.range) {
-                force.x += dir.x * 1.0;
-                force.y += dir.y * 1.0;
+                forceX += dirX * 1.0;
+                forceY += dirY * 1.0;
               }
             } else {
-              // Melee seek - simpler and aggressive
-              force.x += dir.x * 1.2;
-              force.y += dir.y * 1.2;
+              forceX += dirX * 1.2;
+              forceY += dirY * 1.2;
             }
           }
         }
       }
-      // If no target and ATTACK strategy, move towards Enemy Centroid? (Advanced, maybe later)
 
-
-      // Flocking forces (only consider nearby allies)
-      // STAGGERED UPDATE: Only calculate flocking every 2nd frame per unit
-      const unitHash = parseInt(unit.id.slice(-1), 36) || 0;
+      // Flocking forces
+      const unitHash = unit.id.charCodeAt(unit.id.length - 1);
       const shouldUpdateFlocking = (this.frame + unitHash) % 2 === 0;
 
-      let separationForce = { x: 0, y: 0 };
-
       if (shouldUpdateFlocking) {
-        const neighbors = this.grid.getNearby(unit.position);
-        let cohesionCenter = { x: 0, y: 0 };
-        let alignmentVel = { x: 0, y: 0 };
+        const neighbors = this.grid.getNearby(unit.position.x, unit.position.y);
+        let cohX = 0, cohY = 0;
+        let alignX = 0, alignY = 0;
         let allyCount = 0;
-        let calculatedSeparation = { x: 0, y: 0 };
+        let sepX = 0, sepY = 0;
 
-        for (const nid of neighbors) {
+        for (let j = 0; j < neighbors.length; j++) {
+          const nid = neighbors[j];
           if (nid === unit.id) continue;
           const other = this.units.get(nid);
           if (!other) continue;
 
           const dx = other.position.x - unit.position.x;
           const dy = other.position.y - unit.position.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
+          const d2 = dx * dx + dy * dy;
 
           if (other.team !== unit.team) {
-            // Repel from enemies slightly to avoid clipping through them
-            if (dist < 30) {
-              const repelStrength = (30 - dist) / 30;
-              calculatedSeparation.x -= (dx / dist) * repelStrength * 1.0;
-              calculatedSeparation.y -= (dy / dist) * repelStrength * 1.0;
+            // Enemy Repel
+            if (d2 < 900) { // 30^2
+              const d = Math.sqrt(d2);
+              const repelStrength = (30 - d) / 30;
+              // Normalized dx/d * repel
+              const push = repelStrength * 1.0;
+              sepX -= (dx / d) * push;
+              sepY -= (dy / d) * push;
             }
             continue;
           }
 
-          if (dist < 80) { // Flocking radius
+          if (d2 < 6400) { // 80^2
             allyCount++;
+            cohX += other.position.x;
+            cohY += other.position.y;
+            alignX += other.velocity.x;
+            alignY += other.velocity.y;
 
-            // Cohesion & Alignment
-            cohesionCenter.x += other.position.x;
-            cohesionCenter.y += other.position.y;
-            alignmentVel.x += other.velocity.x;
-            alignmentVel.y += other.velocity.y;
-
-            // Separation from allies
-            if (dist < 25 && dist > 0.1) {
-              const repelStrength = (25 - dist) / 25;
-              calculatedSeparation.x -= (dx / dist) * repelStrength * 1.5;
-              calculatedSeparation.y -= (dy / dist) * repelStrength * 1.5;
+            if (d2 < 625 && d2 > 0.01) { // 25^2
+              const d = Math.sqrt(d2);
+              const repelStrength = (25 - d) / 25;
+              const push = repelStrength * 1.5;
+              sepX -= (dx / d) * push;
+              sepY -= (dy / d) * push;
             }
           }
         }
 
-        // Apply flocking forces
-        let newFlockingForce = { x: 0, y: 0 };
+        let newFlockX = 0;
+        let newFlockY = 0;
 
         if (allyCount > 0 && unit.state !== UnitState.MOVING) {
-          // Cohesion
-          cohesionCenter.x /= allyCount;
-          cohesionCenter.y /= allyCount;
-          const cohesionDir = normalize({
-            x: cohesionCenter.x - unit.position.x,
-            y: cohesionCenter.y - unit.position.y
-          });
-          newFlockingForce.x += cohesionDir.x * 0.1;
-          newFlockingForce.y += cohesionDir.y * 0.1;
+          cohX /= allyCount;
+          cohY /= allyCount;
+          const cdx = cohX - unit.position.x;
+          const cdy = cohY - unit.position.y;
+          const cdist = Math.sqrt(cdx * cdx + cdy * cdy);
+          if (cdist > 0) {
+            newFlockX += (cdx / cdist) * 0.1;
+            newFlockY += (cdy / cdist) * 0.1;
+          }
 
-          // Alignment
-          alignmentVel.x /= allyCount;
-          alignmentVel.y /= allyCount;
-          newFlockingForce.x += alignmentVel.x * 0.05;
-          newFlockingForce.y += alignmentVel.y * 0.05;
+          alignX /= allyCount;
+          alignY /= allyCount;
+          newFlockX += alignX * 0.05;
+          newFlockY += alignY * 0.05;
         }
 
-        unit.cachedFlockingForce = {
-          x: newFlockingForce.x + calculatedSeparation.x,
-          y: newFlockingForce.y + calculatedSeparation.y
-        };
+        unit.cachedFlockingForce.x = newFlockX + sepX;
+        unit.cachedFlockingForce.y = newFlockY + sepY;
       }
 
-      // Always apply cached force (smoothed over frames)
-      force.x += unit.cachedFlockingForce.x;
-      force.y += unit.cachedFlockingForce.y;
+      forceX += unit.cachedFlockingForce.x;
+      forceY += unit.cachedFlockingForce.y;
 
+      // Apply Physics
+      unit.velocity.x += forceX * config.acceleration;
+      unit.velocity.y += forceY * config.acceleration;
 
+      // Friction
+      unit.velocity.x *= 0.95;
+      unit.velocity.y *= 0.95;
 
-      // Apply Force to Velocity using unit's acceleration
-      unit.velocity.x += force.x * config.acceleration;
-      unit.velocity.y += force.y * config.acceleration;
-
-      // Friction / Damping
-      const friction = 0.95;
-      unit.velocity.x *= friction;
-      unit.velocity.y *= friction;
-
-      // Clamp Velocity to max speed
-      const currentSpeed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
-      if (currentSpeed > config.speed) {
-        unit.velocity.x = (unit.velocity.x / currentSpeed) * config.speed;
-        unit.velocity.y = (unit.velocity.y / currentSpeed) * config.speed;
+      // Clamp Speed
+      const speedSq = unit.velocity.x ** 2 + unit.velocity.y ** 2;
+      if (speedSq > config.speed * config.speed) {
+        const speed = Math.sqrt(speedSq);
+        unit.velocity.x = (unit.velocity.x / speed) * config.speed;
+        unit.velocity.y = (unit.velocity.y / speed) * config.speed;
       }
 
-      // Apply Position
       unit.position.x += unit.velocity.x;
       unit.position.y += unit.velocity.y;
 
-      // Boundary Checks
+      // Bounds
       unit.position.x = Math.max(unit.radius, Math.min(WORLD_WIDTH - unit.radius, unit.position.x));
       unit.position.y = Math.max(unit.radius, Math.min(WORLD_HEIGHT - unit.radius, unit.position.y));
 
-      // Morale Recovery & Fleeing Check
+      // Morale/Combat Logic
       if (unit.state === UnitState.FLEEING) {
-        unit.morale += 0.2; // Recover faster while fleeing
-        // Run away from nearest enemy!
-        if (unit.morale > 50) {
-          unit.state = UnitState.IDLE; // Rally!
-        }
+        unit.morale += 0.2;
+        if (unit.morale > 50) unit.state = UnitState.IDLE;
       } else {
-        // Natural recovery if high health
-        if (unit.health > unit.maxHealth * 0.5) {
-          unit.morale = Math.min(100, unit.morale + 0.05);
-        }
+        if (unit.health > unit.maxHealth * 0.5) unit.morale = Math.min(100, unit.morale + 0.05);
       }
 
-      // C. Combat Logic
-      if (unit.cooldownTimer > 0) {
-        unit.cooldownTimer--;
-      }
+      // Attack
+      if (unit.cooldownTimer > 0) unit.cooldownTimer--;
 
       if (unit.targetId && unit.cooldownTimer <= 0 && unit.state !== UnitState.FLEEING) {
         const target = this.units.get(unit.targetId);
         if (target) {
-          const distToTarget = Math.sqrt(distSq(unit.position, target.position));
+          const dx = target.position.x - unit.position.x;
+          const dy = target.position.y - unit.position.y;
+          const dSq = dx * dx + dy * dy;
+          const range = config.range + target.radius;
 
-          if (distToTarget <= config.range + target.radius) {
-            // Calculate base damage with defense reduction
+          if (dSq <= range * range) {
             const targetConfig = UNIT_CONFIGS[target.type];
-            let baseDamage = config.damage;
+            let dmg = config.damage;
 
-            // Cavalry charge bonus: damage scales with speed
             if (unit.type === UnitType.CAVALRY) {
-              const currentSpeed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
-              const speedRatio = currentSpeed / config.speed; // 0 to 1
-              const chargeMultiplier = 1 + speedRatio; // 1x to 2x damage
-              baseDamage = Math.floor(config.damage * chargeMultiplier);
-
-              // Extra impact particles for cavalry charge
-              if (speedRatio > 0.5) {
-                this.spawnParticles(target.position.x, target.position.y, '#ffcc00', 6, 5);
-              }
+              const spd = Math.sqrt(speedSq);
+              const ratio = spd / config.speed;
+              dmg = Math.floor(dmg * (1 + ratio));
+              if (ratio > 0.5) this.spawnParticles(target.position.x, target.position.y, '#ffcc00', 6, 5);
             }
 
-            const effectiveDamage = Math.max(1, baseDamage - targetConfig.defense);
-            target.health -= effectiveDamage;
+            const effDmg = Math.max(1, dmg - targetConfig.defense);
+            target.health -= effDmg;
             unit.cooldownTimer = config.attackCooldown;
+            target.morale -= effDmg * 0.8;
 
-            // Morale Damage
-            target.morale -= effectiveDamage * 0.8;
             if (target.morale <= 0 && target.state !== UnitState.FLEEING) {
               target.state = UnitState.FLEEING;
-              // Drop command target
               target.commandTarget = null;
             }
 
-            // Knockback: Push target away from attacker
-            const knockbackDir = normalize({
-              x: target.position.x - unit.position.x,
-              y: target.position.y - unit.position.y
-            });
-            const knockbackStrength = (effectiveDamage * 0.15) / target.mass;
-            target.velocity.x += knockbackDir.x * knockbackStrength;
-            target.velocity.y += knockbackDir.y * knockbackStrength;
+            const d = Math.sqrt(dSq);
+            const nx = dx / d;
+            const ny = dy / d;
+            const kb = (effDmg * 0.15) / target.mass;
+            target.velocity.x += nx * kb;
+            target.velocity.y += ny * kb;
 
-            // Hit effects - more particles for impact feel
             this.spawnParticles(target.position.x, target.position.y, '#ffffff', 4, 3);
             this.spawnParticles(target.position.x, target.position.y, target.team === Team.RED ? '#ff6666' : '#6699ff', 3, 2);
-
-            if (target.health <= 0) {
-              // Defer deletion
-            }
           }
         }
       }
@@ -458,79 +388,75 @@ export class SimulationEngine {
       }
     }
 
-    // 3. Resolve Collisions (Iterative Mass-Based)
+    // 3. Resolve Collisions
     this.resolveCollisions();
 
-    // Cleanup Dead Units with dramatic death effects
-    for (const id of deadUnits) {
-      const u = this.units.get(id);
+    // Cleanup
+    for (let i = 0; i < deadUnits.length; i++) {
+      const u = this.units.get(deadUnits[i]);
       if (u) {
-        const teamColor = u.team === Team.RED ? '#ef4444' : '#3b82f6';
-        // Big death burst
-        this.spawnParticles(u.position.x, u.position.y, teamColor, 12, 6);
-        this.spawnParticles(u.position.x, u.position.y, '#ffffff', 6, 4);
-        this.spawnParticles(u.position.x, u.position.y, '#ffcc00', 4, 3);
-        this.units.delete(id);
+        this.spawnParticles(u.position.x, u.position.y, u.team === Team.RED ? '#ef4444' : '#3b82f6', 12, 6);
+        this.units.delete(u.id);
+        // Remove from array - O(N) but OK for deaths
+        const idx = this.unitsArray.findIndex(unit => unit.id === u.id);
+        if (idx !== -1) {
+          this.unitsArray[idx] = this.unitsArray[this.unitsArray.length - 1];
+          this.unitsArray.pop();
+        }
       }
     }
 
-    // 4. Particle Logic
+    // 4. Particles (Reverse Loop for safe splice)
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.position.x += p.velocity.x;
       p.position.y += p.velocity.y;
       p.life--;
-      if (p.life <= 0) {
-        this.particles.splice(i, 1);
-      }
+      if (p.life <= 0) this.particles.splice(i, 1);
     }
   }
 
   resolveCollisions() {
-    const iterations = 2; // Iterative solver for stability
+    const iterations = 2;
     for (let k = 0; k < iterations; k++) {
-      for (const unit of this.units.values()) {
-        const neighbors = this.grid.getNearby(unit.position);
-        for (const nid of neighbors) {
+      const len = this.unitsArray.length;
+      for (let i = 0; i < len; i++) {
+        const unit = this.unitsArray[i];
+        const neighbors = this.grid.getNearby(unit.position.x, unit.position.y);
+
+        for (let j = 0; j < neighbors.length; j++) {
+          const nid = neighbors[j];
           if (unit.id === nid) continue;
           const other = this.units.get(nid);
           if (!other) continue;
 
           const dx = unit.position.x - other.position.x;
           const dy = unit.position.y - other.position.y;
-          const distSq = dx * dx + dy * dy;
+          const d2 = dx * dx + dy * dy;
           const minDist = unit.radius + other.radius;
+          const minDist2 = minDist * minDist;
 
-          if (distSq < minDist * minDist && distSq > 0.0001) {
-            const dist = Math.sqrt(distSq);
-            const penetration = minDist - dist;
-
-            // Mass-based displacement
+          if (d2 < minDist2 && d2 > 0.0001) {
+            const dist = Math.sqrt(d2);
+            const pen = minDist - dist;
             const totalMass = unit.mass + other.mass;
-            const ratio1 = other.mass / totalMass; // Move unit less if it has more mass (inverse logic, handled by ratio)
-            const ratio2 = unit.mass / totalMass;
-
-            // NOTE: Ratio logic: 
-            // If unit is Mass 10, other is Mass 1. Total = 11.
-            // unit moves: 1/11th of overlap.
-            // other moves: 10/11th of overlap.
-            // This is correct.
+            const r1 = other.mass / totalMass;
+            const r2 = unit.mass / totalMass;
 
             const nx = dx / dist;
             const ny = dy / dist;
 
-            // Apply displacement
-            unit.position.x += nx * penetration * ratio1;
-            unit.position.y += ny * penetration * ratio1;
-            other.position.x -= nx * penetration * ratio2;
-            other.position.y -= ny * penetration * ratio2;
+            unit.position.x += nx * pen * r1;
+            unit.position.y += ny * pen * r1;
+            other.position.x -= nx * pen * r2;
+            other.position.y -= ny * pen * r2;
 
-            // Momentum/Impulse Transfer (Slight bump to velocity)
-            const impactFactor = 0.05;
-            unit.velocity.x += nx * impactFactor * ratio1;
-            unit.velocity.y += ny * impactFactor * ratio1;
-            other.velocity.x -= nx * impactFactor * ratio2;
-            other.velocity.y -= ny * impactFactor * ratio2;
+            // Impulse
+            const imp = 0.05;
+            unit.velocity.x += nx * imp * r1;
+            unit.velocity.y += ny * imp * r1;
+            other.velocity.x -= nx * imp * r2;
+            other.velocity.y -= ny * imp * r2;
           }
         }
       }
@@ -538,62 +464,54 @@ export class SimulationEngine {
   }
 
   findTarget(unit: Unit): string | null {
-    let bestTargetId: string | null = null;
-    let minDistSq = Infinity;
+    let bestId: string | null = null;
+    let minD2 = Infinity;
 
-    // Optimization: Check nearby cells first
-    const nearby = this.grid.getNearby(unit.position);
-    let foundNearby = false;
+    // Local Check
+    const nearby = this.grid.getNearby(unit.position.x, unit.position.y);
+    let found = false;
 
-    for (const nid of nearby) {
+    for (let i = 0; i < nearby.length; i++) {
+      const nid = nearby[i];
       if (nid === unit.id) continue;
       const other = this.units.get(nid);
       if (!other || other.team === unit.team) continue;
 
-      const d = distSq(unit.position, other.position);
-      if (d < minDistSq) {
-        minDistSq = d;
-        bestTargetId = other.id;
-        foundNearby = true;
+      const dx = unit.position.x - other.position.x;
+      const dy = unit.position.y - other.position.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < minD2) {
+        minD2 = d2;
+        bestId = other.id;
+        found = true;
       }
     }
 
-    if (foundNearby) return bestTargetId;
+    if (found) return bestId;
 
-    // Fallback: Global search (expensive, but necessary if no local targets)
-    // Only do this if the grid check failed.
-    // To prevent massive lag, maybe only check a random subset of units? 
-    // For now, simple closest search if local fails.
-    // Global scan modified by Strategy
+    // Global Fallback
     const strategy = this.teamStrategies.get(unit.team) || TeamStrategy.ATTACK;
-    let globalScanLimit = 20;
+    if (strategy === TeamStrategy.DEFEND) return null;
 
-    // If DEFENDING, do NOT do global scan (hold ground, only fight what comes close)
-    if (strategy === TeamStrategy.DEFEND) {
-      return null;
-    }
-
-    // If ATTACKING, scan aggressively
-    if (strategy === TeamStrategy.ATTACK) {
-      globalScanLimit = 50; // Look harder
-    }
-
-
-
+    let scanLimit = strategy === TeamStrategy.ATTACK ? 50 : 20;
     let count = 0;
 
-    for (const other of this.units.values()) {
+    // Iterate cached array
+    for (let i = 0; i < this.unitsArray.length; i++) {
+      const other = this.unitsArray[i];
       if (other.team !== unit.team) {
-        const d = distSq(unit.position, other.position);
-        if (d < minDistSq) {
-          minDistSq = d;
-          bestTargetId = other.id;
+        const dx = unit.position.x - other.position.x;
+        const dy = unit.position.y - other.position.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < minD2) {
+          minD2 = d2;
+          bestId = other.id;
         }
         count++;
-        if (count > globalScanLimit) break;
+        if (count > scanLimit) break;
       }
     }
 
-    return bestTargetId;
+    return bestId;
   }
 }

@@ -73,6 +73,26 @@ export interface Particle {
   size: number;
 }
 
+
+// --- Worker Types ---
+
+export interface SimState {
+  units: Unit[]; // Array for easier iteration/serialization
+  particles: Particle[];
+  stats: GameStateStats;
+  frame: number;
+}
+
+export type WorkerMessage =
+  | { type: 'START' }
+  | { type: 'PAUSE' }
+  | { type: 'RESET' }
+  | { type: 'SPAWN', payload: { x: number, y: number, team: Team, type: UnitType, count: number } }
+  | { type: 'UPDATE_STRATEGY', payload: { team: Team, strategy: TeamStrategy } };
+
+export type WorkerResponse =
+  | { type: 'TICK', payload: SimState };
+
 export interface GameStateStats {
   redCount: number;
   blueCount: number;

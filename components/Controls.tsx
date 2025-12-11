@@ -1,5 +1,5 @@
 import React from 'react';
-import { UnitType, Team, TeamStrategy } from '../types';
+import { UnitType, Team, TeamStrategy, GameStateStats } from '../types';
 import { Play, Pause, RotateCcw, Swords, Shield, Crosshair, Zap, Sword, Shield as ShieldIcon } from 'lucide-react';
 
 interface ControlsProps {
@@ -12,7 +12,7 @@ interface ControlsProps {
   setSelectedUnit: (u: UnitType) => void;
   spawnCount: number;
   setSpawnCount: (n: number) => void;
-  stats: { red: number; blue: number };
+  stats: GameStateStats;
   redStrategy: TeamStrategy;
   blueStrategy: TeamStrategy;
   onStrategyChange: (team: Team, strategy: TeamStrategy) => void;
@@ -53,8 +53,8 @@ export const Controls: React.FC<ControlsProps> = ({
           <RotateCcw size={20} />
         </button>
         <div className="ml-4 flex flex-col text-xs font-mono text-neutral-400">
-          <span className="text-red-400">RED: {stats.red}</span>
-          <span className="text-blue-400">BLUE: {stats.blue}</span>
+          <span className="text-red-400">RED: {stats.redCount}</span>
+          <span className="text-blue-400">BLUE: {stats.blueCount}</span>
         </div>
       </div>
 

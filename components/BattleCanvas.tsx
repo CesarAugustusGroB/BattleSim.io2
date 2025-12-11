@@ -1,16 +1,15 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { SimulationEngine } from '../services/simulation';
 import { SpriteCache } from '../services/SpriteCache';
 import { WORLD_WIDTH, WORLD_HEIGHT, TEAM_COLORS, UNIT_CONFIGS } from '../constants';
-import { Team, UnitType, Unit } from '../types';
+import { Team, UnitType, Unit, SimState } from '../types';
 import { Application, Container, Sprite, Graphics, Text, Texture } from 'pixi.js';
 
 interface BattleCanvasProps {
-  simulation: SimulationEngine;
+  gameStateRef: React.MutableRefObject<SimState | null>;
   onSelectPos: (x: number, y: number) => void;
 }
 
-export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelectPos }) => {
+export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSelectPos }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const [cursorStyle, setCursorStyle] = useState('cursor-crosshair');
@@ -39,6 +38,9 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, []);
+
+  // NOTE: We don't need a local ref for 'gameState' anymore because we receive the Ref from parent.
+
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -87,17 +89,10 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       worldStage.addChild(uiLayer);
 
       // 3. Draw Static Grid
-      // v8 deprecated lineStyle(width, color), use stroke({ width, color }) or just stroke(color) if width is set via SetStrokeStyle?
-      // Actually v8 is somewhat backward compatible but stroke() is preferred.
-      // Let's stick to standard v7 syntax if it still works, or update.
       // v8 Graphics API is: graphics.moveTo(..).lineTo(..).stroke({ width: 2, color: 0x262626 })
-      gridLayer.moveTo(0, 0); // Reset context if needed, but for new graphics it's fine.
+      gridLayer.moveTo(0, 0);
 
       // Draw Loop for Grid
-      // To be safe with v8, let's use the new API or standard one. 
-      // For simplicity and compatibility, we will assume standard drawing commands work or use the new stroke method at the end.
-
-      // v8 pattern: Build geometry, then stroke/fill.
       for (let x = 0; x <= WORLD_WIDTH; x += 100) {
         gridLayer.moveTo(x, 0).lineTo(x, WORLD_HEIGHT);
       }
@@ -119,12 +114,25 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
 
       // 5. Render Loop
       app.ticker.add(() => {
+        const state = gameStateRef.current;
+        if (!state) return;
+
         // A. Sync Units
-        const units = simulation.units;
+        const units = state.units; // Array!
         const processedIds = new Set<string>();
 
+        // Optimizing Unit Lookup for Projectiles (unitId -> Unit)
+        // Since we receive an array, we might want a Map for O(1) lookup if we do target lookups.
+        // But building a Map every frame is overhead.
+        // For projectiles we need target position.
+        // Let's build a quick map just for positions? Or just iterate?
+        // Actually, we can just build the Map once per frame since checking targetId requires it.
+        const unitMap = new Map<string, Unit>();
+        for (const u of units) unitMap.set(u.id, u);
+
+
         // Update/Create
-        for (const unit of units.values()) {
+        for (const unit of units) {
           processedIds.add(unit.id);
           let visual = spriteMap.current.get(unit.id);
 
@@ -140,7 +148,6 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
 
           // Rotation (Child 1 is the body: Shadow=0, Body=1, HP=2)
           const body = visual.children[1] as Sprite;
-          // Wait, in createUnitVisual shadows are 0, body is 1. Correct.
 
           const speedSq = unit.velocity.x ** 2 + unit.velocity.y ** 2;
           if (speedSq > 0.01) {
@@ -165,16 +172,16 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
         pGraphics.clear();
 
         // Particles
-        for (const p of simulation.particles) {
+        for (const p of state.particles) {
           pGraphics.circle(p.position.x, p.position.y, p.size);
           pGraphics.fill({ color: stringToHex(p.color), alpha: p.life / p.maxLife });
         }
 
         // Projectiles (Arrows/Beams)
-        for (const unit of units.values()) {
+        for (const unit of units) {
           const config = UNIT_CONFIGS[unit.type];
           if (unit.targetId && unit.cooldownTimer > config.attackCooldown - 5) {
-            const target = simulation.units.get(unit.targetId);
+            const target = unitMap.get(unit.targetId);
             if (target) {
               const color = unit.team === Team.BLUE ? TEAM_COLORS.BLUE.bullet : TEAM_COLORS.RED.bullet;
 
@@ -226,29 +233,26 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
   // Helpers
   const createUnitVisual = (unit: Unit): Container => {
     const container = new Container();
-
     const config = UNIT_CONFIGS[unit.type];
 
     // 1. Shadow (Child 0)
     const shadowTex = SpriteCache.getShadowTexture();
     const shadow = new Sprite(shadowTex);
     shadow.anchor.set(0.5);
-    const shadowSize = config.radius * 2.5 / 64; // Scale relative to 64px tex
+    const shadowSize = config.radius * 2.5 / 64;
     shadow.scale.set(shadowSize);
     shadow.alpha = 0.5;
-    shadow.position.set(3, 3); // offset
+    shadow.position.set(3, 3);
     container.addChild(shadow);
 
     // 2. Body (Child 1)
     const tex = SpriteCache.getTexture(unit.type, unit.team);
     const sprite = new Sprite(tex);
     sprite.anchor.set(0.5);
-    // Sprite is pre-sized in cache, no scale needed usually
     container.addChild(sprite);
 
     // 3. Health Bar (Child 2)
     const hpBar = new Graphics();
-    // Draw initial state
     hpBar.position.set(0, -config.radius - 8);
     container.addChild(hpBar);
 
@@ -280,7 +284,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
 
-  // Native DOM Listeners for Input (easier than Pixi Interaction for full screen pan)
+  // Native DOM Listeners for Input
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -288,24 +292,20 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (!appRef.current) return;
-      const stage = appRef.current.stage.children[0] as Container; // worldStage
+      const stage = appRef.current.stage.children[0] as Container;
 
       const zoomSensitivity = 0.001;
       const oldZoom = stage.scale.x;
       const newZoom = Math.min(Math.max(0.1, oldZoom - e.deltaY * zoomSensitivity), 4);
 
-      // Zoom towards mouse
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      // World pos before
       const worldX = (mouseX - stage.x) / oldZoom;
       const worldY = (mouseY - stage.y) / oldZoom;
 
       stage.scale.set(newZoom);
-
-      // Adjust pos to keep worldX under mouse
       stage.x = mouseX - worldX * newZoom;
       stage.y = mouseY - worldY * newZoom;
     };
@@ -317,7 +317,6 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
         lastMouse.current = { x: e.clientX, y: e.clientY };
         setCursorStyle('cursor-grabbing');
       } else if (e.button === 0) {
-        // Spawn
         if (!appRef.current) return;
         const stage = appRef.current.stage.children[0] as Container;
         const rect = el.getBoundingClientRect();
@@ -362,7 +361,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
   return (
     <div ref={containerRef} className={`w-full h-full relative overflow-hidden bg-black ${cursorStyle}`}>
       <div className="absolute top-4 left-4 text-white/50 text-xs select-none pointer-events-none z-10">
-        PixiJS Mode • Left-click to Spawn • Middle-click/Alt+Drag to Pan
+        PixiJS + Web Worker Mode • Left-click to Spawn • WASD/Drag to Pan
       </div>
     </div>
   );

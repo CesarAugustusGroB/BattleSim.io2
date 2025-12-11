@@ -1,17 +1,69 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BattleCanvas } from './components/BattleCanvas';
 import { Controls } from './components/Controls';
-import { SimulationEngine } from './services/simulation';
-import { Team, UnitType, GameStateStats, TeamStrategy } from './types';
+import { Team, UnitType, GameStateStats, TeamStrategy, SimState, WorkerMessage, WorkerResponse } from './types';
 import { StrategyAdvisor } from './components/StrategyAdvisor';
+// Import Worker using Vite's suffix syntax
+// @ts-ignore - handled by Vite
+import SimWorker from './workers/simulation.worker?worker';
 
 function App() {
-  // Use Ref for simulation to avoid re-renders on every tick
-  const simulationRef = useRef<SimulationEngine>(new SimulationEngine());
+  // Worker Reference
+  const workerRef = useRef<Worker | null>(null);
+
+  // Game/Simulation State (Ref for high-frequency updates, passed to Canvas)
+  // We pass this Mutable Ref to BattleCanvas so it can read the latest state in its render loop
+  // without triggering React re-renders.
+  const simulationStateStore = useRef<SimState | null>(null);
 
   // React state for UI updates (lower frequency)
   const [isRunning, setIsRunning] = useState(true);
-  const [stats, setStats] = useState({ red: 0, blue: 0 });
+  const [stats, setStats] = useState<GameStateStats>({
+    redCount: 0, blueCount: 0,
+    redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 },
+    blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 }
+  });
+
+
+  // Stats for Gemini (Memoized to read from last stats)
+  const getFullStats = useCallback((): GameStateStats => {
+    return stats;
+  }, [stats]);
+
+
+  // Initialize Worker
+  useEffect(() => {
+    const worker = new SimWorker();
+    workerRef.current = worker;
+
+    worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+      const msg = e.data;
+      if (msg.type === 'TICK') {
+        // Update the store for the Canvas
+        simulationStateStore.current = msg.payload;
+
+        // Throttle UI updates (e.g. every 10 frames)
+        if (msg.payload.frame % 10 === 0) {
+          setStats(msg.payload.stats);
+        }
+      }
+    };
+
+    // Start Simulation
+    worker.postMessage({ type: 'START' });
+
+    return () => {
+      worker.terminate();
+    };
+  }, []);
+
+  // Play/Pause
+  useEffect(() => {
+    if (!workerRef.current) return;
+    if (isRunning) workerRef.current.postMessage({ type: 'START' });
+    else workerRef.current.postMessage({ type: 'PAUSE' });
+  }, [isRunning]);
+
 
   // Selection State
   const [selectedTeam, setSelectedTeam] = useState<Team>(Team.BLUE);
@@ -22,51 +74,6 @@ function App() {
   const [redStrategy, setRedStrategy] = useState<TeamStrategy>(TeamStrategy.ATTACK);
   const [blueStrategy, setBlueStrategy] = useState<TeamStrategy>(TeamStrategy.ATTACK);
 
-  // Stats for Gemini
-  const getFullStats = useCallback((): GameStateStats => {
-    const sim = simulationRef.current;
-    const stats: GameStateStats = {
-      redCount: 0,
-      blueCount: 0,
-      redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 },
-      blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 }
-    };
-
-    for (const unit of sim.units.values()) {
-      if (unit.team === Team.RED) {
-        stats.redCount++;
-        stats.redComposition[unit.type]++;
-      } else {
-        stats.blueCount++;
-        stats.blueComposition[unit.type]++;
-      }
-    }
-    return stats;
-  }, []);
-
-  // Loop
-  useEffect(() => {
-    let frameId: number;
-    const loop = () => {
-      if (isRunning) {
-        simulationRef.current.update();
-      }
-
-      // Update UI stats every 10 frames to save React renders
-      if (simulationRef.current.frame % 10 === 0) {
-        let red = 0;
-        let blue = 0;
-        for (const u of simulationRef.current.units.values()) {
-          if (u.team === Team.RED) red++; else blue++;
-        }
-        setStats({ red, blue });
-      }
-
-      frameId = requestAnimationFrame(loop);
-    };
-    frameId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(frameId);
-  }, [isRunning]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -103,8 +110,7 @@ function App() {
           break;
         // Reset
         case 'r':
-          simulationRef.current.reset();
-          setStats({ red: 0, blue: 0 });
+          handleReset();
           break;
       }
 
@@ -114,26 +120,24 @@ function App() {
         if (presetKey >= 1 && presetKey <= 5) {
           const centerX = 200 + Math.random() * (1600);
           const centerY = 200 + Math.random() * (1100);
-          const sim = simulationRef.current;
+
+          if (!workerRef.current) return;
+          const msg = (type: UnitType, count: number, x: number, y: number) =>
+            workerRef.current!.postMessage({
+              type: 'SPAWN',
+              payload: { x, y, team: selectedTeam, type, count }
+            });
 
           switch (presetKey) {
-            case 1: // 50 Soldiers
-              sim.spawnFormation(centerX, centerY, selectedTeam, UnitType.SOLDIER, 50);
-              break;
-            case 2: // 15 Tanks
-              sim.spawnFormation(centerX, centerY, selectedTeam, UnitType.TANK, 15);
-              break;
-            case 3: // 30 Archers
-              sim.spawnFormation(centerX, centerY, selectedTeam, UnitType.ARCHER, 30);
-              break;
-            case 4: // 25 Cavalry
-              sim.spawnFormation(centerX, centerY, selectedTeam, UnitType.CAVALRY, 25);
-              break;
-            case 5: // Mixed army
-              sim.spawnFormation(centerX - 50, centerY, selectedTeam, UnitType.SOLDIER, 20);
-              sim.spawnFormation(centerX + 50, centerY, selectedTeam, UnitType.TANK, 5);
-              sim.spawnFormation(centerX, centerY - 60, selectedTeam, UnitType.ARCHER, 15);
-              sim.spawnFormation(centerX, centerY + 60, selectedTeam, UnitType.CAVALRY, 10);
+            case 1: msg(UnitType.SOLDIER, 50, centerX, centerY); break;
+            case 2: msg(UnitType.TANK, 15, centerX, centerY); break;
+            case 3: msg(UnitType.ARCHER, 30, centerX, centerY); break;
+            case 4: msg(UnitType.CAVALRY, 25, centerX, centerY); break;
+            case 5: // Mixed - multiple calls
+              msg(UnitType.SOLDIER, 20, centerX - 50, centerY);
+              msg(UnitType.TANK, 5, centerX + 50, centerY);
+              msg(UnitType.ARCHER, 15, centerX, centerY - 60);
+              msg(UnitType.CAVALRY, 10, centerX, centerY + 60);
               break;
           }
         }
@@ -145,18 +149,30 @@ function App() {
   }, [selectedTeam]);
 
 
-
   const handleSpawn = (x: number, y: number) => {
-    simulationRef.current.spawnFormation(x, y, selectedTeam, selectedUnit, spawnCount);
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({
+      type: 'SPAWN',
+      payload: { x, y, team: selectedTeam, type: selectedUnit, count: spawnCount }
+    });
   };
 
   const handleReset = () => {
-    simulationRef.current.reset();
-    setStats({ red: 0, blue: 0 });
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({ type: 'RESET' });
+    setStats({
+      redCount: 0, blueCount: 0,
+      redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 },
+      blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 }
+    });
   };
 
   const handleStrategyChange = (team: Team, strategy: TeamStrategy) => {
-    simulationRef.current.teamStrategies.set(team, strategy);
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({
+      type: 'UPDATE_STRATEGY',
+      payload: { team, strategy }
+    });
     if (team === Team.RED) setRedStrategy(strategy);
     else setBlueStrategy(strategy);
   };
@@ -167,7 +183,7 @@ function App() {
       {/* Simulation Layer */}
       <div className="flex-1 relative z-0">
         <BattleCanvas
-          simulation={simulationRef.current}
+          gameStateRef={simulationStateStore}
           onSelectPos={handleSpawn}
         />
       </div>
