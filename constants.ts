@@ -4,11 +4,30 @@ export const WORLD_WIDTH = 2000;
 export const WORLD_HEIGHT = 1500;
 export const GRID_SIZE = 50; // Size of spatial partition cells
 
+// Terrain Configuration
+export const TERRAIN_CONFIG = {
+    HILL: {
+        x: WORLD_WIDTH / 2,
+        y: WORLD_HEIGHT / 2,
+        radius: 350,
+        elevation: 1, // Base ground is 0
+        color: '#262626',
+        borderColor: '#404040'
+    }
+};
+
+export const ELEVATION_CONFIG = {
+    RANGE_BONUS_PER_LEVEL: 0.25, // +25% Range per elevation level
+    DAMAGE_BONUS_HIGH_TO_LOW: 1.3, // +30% Damage dealing down
+    DAMAGE_REDUCTION_LOW_TO_HIGH: 0.7, // -30% Damage taken from below
+    KNOCKBACK_BONUS: 1.5 // +50% Knockback dealing down
+};
+
 // Flocking & Squad Behavior Constants
 export const FLOCKING_CONFIG = {
-  SEPARATION_WEIGHT: 1.5,
+  SEPARATION_WEIGHT: 2.5, // Increased to prevent stacking
   ALIGNMENT_WEIGHT: 0.8,
-  COHESION_WEIGHT: 0.6,
+  COHESION_WEIGHT: 0.3, // Reduced to prevent blobbing
   SQUAD_MAGNETISM_WEIGHT: 0.05, // Pull towards squad center
   SEPARATION_RADIUS: 25,
   NEIGHBOR_RADIUS: 80

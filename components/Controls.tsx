@@ -1,6 +1,6 @@
 import React from 'react';
-import { UnitType, Team, OrderType } from '../types';
-import { Play, Pause, RotateCcw, Swords, Shield, Crosshair, Zap, Skull, Flag } from 'lucide-react';
+import { UnitType, Team, OrderType, MapTool } from '../types';
+import { Play, Pause, RotateCcw, Swords, Shield, Crosshair, Zap, Flag, Mountain, LandPlot, Eraser } from 'lucide-react';
 
 interface ControlsProps {
   isRunning: boolean;
@@ -15,6 +15,10 @@ interface ControlsProps {
   stats: { red: number; blue: number };
   teamOrders: { [Team.RED]: OrderType; [Team.BLUE]: OrderType };
   setTeamOrder: (team: Team, order: OrderType) => void;
+  isMapMode: boolean;
+  onToggleMapMode: () => void;
+  mapTool: MapTool;
+  setMapTool: (t: MapTool) => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -29,7 +33,11 @@ export const Controls: React.FC<ControlsProps> = ({
   setSpawnCount,
   stats,
   teamOrders,
-  setTeamOrder
+  setTeamOrder,
+  isMapMode,
+  onToggleMapMode,
+  mapTool,
+  setMapTool
 }) => {
   const getNextOrder = (current: OrderType) => {
     if (current === OrderType.ATTACK) return OrderType.CAPTURE;
@@ -104,69 +112,129 @@ export const Controls: React.FC<ControlsProps> = ({
           </div>
       </div>
 
+      {/* Map Tools Switch */}
+      <div className="flex items-center">
+          <button
+            onClick={onToggleMapMode}
+            className={`flex flex-col items-center justify-center w-12 h-12 rounded-lg transition-all ${isMapMode ? 'bg-amber-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:text-white'}`}
+          >
+             <Mountain size={20} />
+             <span className="text-[9px] mt-1">MAP</span>
+          </button>
+      </div>
+
       {/* Spawn Controls */}
       <div className="flex flex-1 justify-center gap-6 items-center">
-        {/* Team Select */}
-        <div className="flex bg-neutral-800 rounded-lg p-1">
-           <button 
-             onClick={() => setSelectedTeam(Team.RED)}
-             className={`px-4 py-2 rounded-md font-bold transition-all flex flex-col items-center ${selectedTeam === Team.RED ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-           >
-             <span>RED</span>
-             <span className="text-[10px] opacity-60 font-mono">(Q)</span>
-           </button>
-           <button 
-             onClick={() => setSelectedTeam(Team.BLUE)}
-             className={`px-4 py-2 rounded-md font-bold transition-all flex flex-col items-center ${selectedTeam === Team.BLUE ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-           >
-             <span>BLUE</span>
-             <span className="text-[10px] opacity-60 font-mono">(W)</span>
-           </button>
-        </div>
-
-        {/* Unit Select */}
-        <div className="flex gap-2">
-            {[
-                { type: UnitType.SOLDIER, icon: Swords, label: 'Soldier', key: 'A' },
-                { type: UnitType.TANK, icon: Shield, label: 'Tank', key: 'S' },
-                { type: UnitType.ARCHER, icon: Crosshair, label: 'Archer', key: 'D' },
-                { type: UnitType.CAVALRY, icon: Zap, label: 'Cavalry', key: 'C' }
-            ].map((u) => (
-                <button
-                    key={u.type}
-                    onClick={() => setSelectedUnit(u.type)}
-                    className={`flex flex-col items-center justify-center w-20 h-20 rounded-lg border-2 transition-all ${selectedUnit === u.type ? 'border-neutral-200 bg-neutral-700' : 'border-transparent bg-neutral-800 hover:bg-neutral-750'}`}
+        {!isMapMode ? (
+            <>
+                {/* Team Select */}
+                <div className="flex bg-neutral-800 rounded-lg p-1">
+                <button 
+                    onClick={() => setSelectedTeam(Team.RED)}
+                    className={`px-4 py-2 rounded-md font-bold transition-all flex flex-col items-center ${selectedTeam === Team.RED ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'}`}
                 >
-                    <u.icon className="mb-1" size={24} />
-                    <span className="text-xs">
-                      {u.label} <span className="opacity-50 font-mono">({u.key})</span>
-                    </span>
+                    <span>RED</span>
+                    <span className="text-[10px] opacity-60 font-mono">(Q)</span>
                 </button>
-            ))}
-        </div>
+                <button 
+                    onClick={() => setSelectedTeam(Team.BLUE)}
+                    className={`px-4 py-2 rounded-md font-bold transition-all flex flex-col items-center ${selectedTeam === Team.BLUE ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white'}`}
+                >
+                    <span>BLUE</span>
+                    <span className="text-[10px] opacity-60 font-mono">(W)</span>
+                </button>
+                </div>
 
-        {/* Count Slider */}
-        <div className="flex flex-col w-32">
-            <div className="flex justify-between items-center mb-1">
-                <label className="text-xs text-neutral-400">Batch Size</label>
-                <input
-                    type="number"
-                    min="1"
-                    max="100"
-                    value={spawnCount}
-                    onChange={(e) => setSpawnCount(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
-                    className="w-12 bg-neutral-800 text-white text-xs border border-neutral-700 rounded px-1 text-center focus:outline-none focus:border-indigo-500"
-                />
+                {/* Unit Select */}
+                <div className="flex gap-2">
+                    {[
+                        { type: UnitType.SOLDIER, icon: Swords, label: 'Soldier', key: 'A' },
+                        { type: UnitType.TANK, icon: Shield, label: 'Tank', key: 'S' },
+                        { type: UnitType.ARCHER, icon: Crosshair, label: 'Archer', key: 'D' },
+                        { type: UnitType.CAVALRY, icon: Zap, label: 'Cavalry', key: 'C' },
+                        { type: UnitType.HQ, icon: LandPlot, label: 'Base', key: 'B' }
+                    ].map((u) => (
+                        <button
+                            key={u.type}
+                            onClick={() => setSelectedUnit(u.type)}
+                            className={`flex flex-col items-center justify-center w-20 h-20 rounded-lg border-2 transition-all ${selectedUnit === u.type ? 'border-neutral-200 bg-neutral-700' : 'border-transparent bg-neutral-800 hover:bg-neutral-750'}`}
+                        >
+                            <u.icon className="mb-1" size={24} />
+                            <span className="text-xs">
+                            {u.label} {u.key && <span className="opacity-50 font-mono">({u.key})</span>}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+
+                {/* Count Slider */}
+                <div className="flex flex-col w-32">
+                    <div className="flex justify-between items-center mb-1">
+                        <label className="text-xs text-neutral-400">Batch Size</label>
+                        <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={spawnCount}
+                            onChange={(e) => setSpawnCount(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                            className="w-12 bg-neutral-800 text-white text-xs border border-neutral-700 rounded px-1 text-center focus:outline-none focus:border-indigo-500"
+                        />
+                    </div>
+                    <input 
+                        type="range" 
+                        min="1" 
+                        max="100" 
+                        value={spawnCount} 
+                        onChange={(e) => setSpawnCount(parseInt(e.target.value))}
+                        className="w-full h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-white"
+                    />
+                </div>
+            </>
+        ) : (
+            <div className="flex items-center gap-4 animate-in fade-in">
+                {/* Team Select for HQ */}
+                <div className="flex bg-neutral-800 rounded-lg p-1 mr-4">
+                  <button 
+                      onClick={() => setSelectedTeam(Team.RED)}
+                      className={`px-3 py-1 rounded font-bold transition-all text-xs ${selectedTeam === Team.RED ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'}`}
+                  >
+                      RED
+                  </button>
+                  <button 
+                      onClick={() => setSelectedTeam(Team.BLUE)}
+                      className={`px-3 py-1 rounded font-bold transition-all text-xs ${selectedTeam === Team.BLUE ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-white'}`}
+                  >
+                      BLUE
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => setMapTool(MapTool.HILL)}
+                        className={`flex flex-col items-center justify-center w-20 h-20 rounded-lg border-2 transition-all ${mapTool === MapTool.HILL ? 'border-amber-400 bg-neutral-700' : 'border-transparent bg-neutral-800 hover:bg-neutral-750'}`}
+                    >
+                        <Mountain className="mb-1 text-amber-500" size={24} />
+                        <span className="text-xs">Add Hill</span>
+                    </button>
+
+                    <button
+                        onClick={() => setMapTool(MapTool.HQ)}
+                        className={`flex flex-col items-center justify-center w-20 h-20 rounded-lg border-2 transition-all ${mapTool === MapTool.HQ ? 'border-white bg-neutral-700' : 'border-transparent bg-neutral-800 hover:bg-neutral-750'}`}
+                    >
+                        <LandPlot className={`mb-1 ${selectedTeam === Team.RED ? 'text-red-500' : 'text-blue-500'}`} size={24} />
+                        <span className="text-xs">Add HQ</span>
+                    </button>
+
+                    <button
+                        onClick={() => setMapTool(MapTool.ERASER)}
+                        className={`flex flex-col items-center justify-center w-20 h-20 rounded-lg border-2 transition-all ${mapTool === MapTool.ERASER ? 'border-red-500 bg-neutral-700' : 'border-transparent bg-neutral-800 hover:bg-neutral-750'}`}
+                    >
+                        <Eraser className="mb-1 text-red-500" size={24} />
+                        <span className="text-xs">Remove</span>
+                    </button>
+                </div>
             </div>
-            <input 
-                type="range" 
-                min="1" 
-                max="100" 
-                value={spawnCount} 
-                onChange={(e) => setSpawnCount(parseInt(e.target.value))}
-                className="w-full h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-white"
-            />
-        </div>
+        )}
       </div>
     </div>
   );

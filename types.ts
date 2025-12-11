@@ -17,9 +17,23 @@ export enum OrderType {
   CAPTURE = 'CAPTURE'
 }
 
+export enum MapTool {
+  HILL = 'HILL',
+  HQ = 'HQ',
+  ERASER = 'ERASER'
+}
+
 export interface Vector2 {
   x: number;
   y: number;
+}
+
+export interface ElevationZone {
+  id: string;
+  x: number;
+  y: number;
+  radius: number;
+  elevation: number;
 }
 
 export interface UnitConfig {

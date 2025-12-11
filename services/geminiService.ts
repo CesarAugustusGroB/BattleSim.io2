@@ -19,6 +19,9 @@ export const getStrategicAdvice = async (
     - Cavalry: Very fast, charge bonus, melee. Good for flanking and breaking lines.
     - HQ: Stationary base, high health, defensive fire. Losing this usually means defeat.
     
+    Terrain Mechanics:
+    - High Ground (Elevation): The map contains elevated terrain zones. Units on high ground deal 50% more damage and inflict more knockback against units on low ground. Controlling these zones provides a significant advantage.
+    
     Current Battle Context:
     - Red Team: ${stats.redCount} units (Soldiers: ${stats.redComposition.SOLDIER}, Tanks: ${stats.redComposition.TANK}, Archers: ${stats.redComposition.ARCHER}, Cavalry: ${stats.redComposition.CAVALRY}, HQ: ${stats.redComposition.HQ})
     - Blue Team: ${stats.blueCount} units (Soldiers: ${stats.blueComposition.SOLDIER}, Tanks: ${stats.blueComposition.TANK}, Archers: ${stats.blueComposition.ARCHER}, Cavalry: ${stats.blueComposition.CAVALRY}, HQ: ${stats.blueComposition.HQ})
@@ -36,7 +39,7 @@ export const getStrategicAdvice = async (
       config: {
         systemInstruction: systemInstruction,
         thinkingConfig: {
-            thinkingBudget: 32768, // Max thinking budget for deep strategic reasoning
+            thinkingBudget: 32768, 
         }
       }
     });

@@ -1,5 +1,5 @@
-import { Unit, UnitType, Team, Vector2, Particle, OrderType } from '../types';
-import { WORLD_WIDTH, WORLD_HEIGHT, GRID_SIZE, UNIT_CONFIGS, FLOCKING_CONFIG } from '../constants';
+import { Unit, UnitType, Team, Vector2, Particle, OrderType, ElevationZone } from '../types';
+import { WORLD_WIDTH, WORLD_HEIGHT, GRID_SIZE, UNIT_CONFIGS, FLOCKING_CONFIG, ELEVATION_CONFIG } from '../constants';
 
 // Utility for unique IDs
 const uuid = () => Math.random().toString(36).substring(2, 9);
@@ -58,6 +58,9 @@ export class SimulationEngine {
   units: Map<string, Unit> = new Map();
   particles: Particle[] = [];
   grid: SpatialGrid = new SpatialGrid();
+  
+  // Dynamic Terrain
+  terrainZones: ElevationZone[] = [];
 
   // Squad Management
   squads: Map<string, Unit[]> = new Map();
@@ -102,13 +105,87 @@ export class SimulationEngine {
     this.teamHQs = { [Team.RED]: [], [Team.BLUE]: [] };
     this.frame = 0;
 
-    // Spawn HQs
+    // Spawn Default HQs
     this.spawnUnit(150, WORLD_HEIGHT / 2, Team.RED, UnitType.HQ);
     this.spawnUnit(WORLD_WIDTH - 150, WORLD_HEIGHT / 2, Team.BLUE, UnitType.HQ);
+  }
+  
+  // Add a dynamic elevation zone (Hill)
+  addTerrainZone(x: number, y: number, radius: number, elevation: number) {
+      this.terrainZones.push({
+          id: uuid(),
+          x,
+          y,
+          radius,
+          elevation
+      });
+  }
+
+  // Remove entity (Terrain or Unit) at position
+  removeEntityAt(x: number, y: number) {
+      // 1. Check Terrain Zones (Iterate reverse to hit top-most)
+      for (let i = this.terrainZones.length - 1; i >= 0; i--) {
+          const z = this.terrainZones[i];
+          const d = Math.sqrt((x - z.x)**2 + (y - z.y)**2);
+          if (d < z.radius) {
+              this.terrainZones.splice(i, 1);
+              return; 
+          }
+      }
+
+      // 2. Check Units (Prioritize HQs)
+      // We check all HQs explicitly first as they are important map objects
+      for (const id of this.hqs) {
+          const u = this.units.get(id);
+          if (u) {
+             const d = Math.sqrt((x - u.position.x)**2 + (y - u.position.y)**2);
+             if (d < u.radius) {
+                 this.units.delete(id);
+                 this.hqs.delete(id);
+                 return;
+             }
+          }
+      }
+
+      // 3. Check General Units (via Grid for efficiency)
+      const nearby = this.grid.getNearby({x, y});
+      for (const id of nearby) {
+          const u = this.units.get(id);
+          if (u) {
+              const d = Math.sqrt((x - u.position.x)**2 + (y - u.position.y)**2);
+              if (d < u.radius * 1.5) { // Slightly generous hit box for small units
+                  this.units.delete(id);
+                  if (u.type === UnitType.HQ) this.hqs.delete(id); // Safety check
+                  return;
+              }
+          }
+      }
   }
 
   setOrder(team: Team, order: OrderType) {
     this.teamOrders[team] = order;
+  }
+
+  // Check if a position is on high ground
+  getElevation(pos: Vector2): number {
+      // Check all zones. If overlapping, take the max elevation.
+      let maxEl = 0;
+      for (const zone of this.terrainZones) {
+          const dx = pos.x - zone.x;
+          const dy = pos.y - zone.y;
+          if (dx * dx + dy * dy < zone.radius * zone.radius) {
+              if (zone.elevation > maxEl) maxEl = zone.elevation;
+          }
+      }
+      return maxEl;
+  }
+
+  // Calculate effective range based on elevation
+  getEffectiveRange(unit: Unit): number {
+      const config = UNIT_CONFIGS[unit.type];
+      const elevation = this.getElevation(unit.position);
+      // Base range * (1 + bonus * elevation)
+      return config.range * (1 + (elevation * ELEVATION_CONFIG.RANGE_BONUS_PER_LEVEL));
   }
 
   spawnUnit(x: number, y: number, team: Team, type: UnitType) {
@@ -163,6 +240,12 @@ export class SimulationEngine {
   }
 
   spawnFormation(centerX: number, centerY: number, team: Team, type: UnitType, count: number) {
+    // If spawning HQ, only spawn 1 regardless of count
+    if (type === UnitType.HQ) {
+        this.spawnUnit(centerX, centerY, team, type);
+        return;
+    }
+
     const spacing = UNIT_CONFIGS[type].radius * 2.5;
     const cols = Math.ceil(Math.sqrt(count));
     
@@ -310,7 +393,10 @@ export class SimulationEngine {
         const target = this.units.get(unit.targetId);
         if (target) {
           distToTarget = Math.sqrt(distSq(unit.position, target.position));
-          let desiredRange = config.range * 0.8;
+          
+          // Use Effective Range (includes High Ground Bonus)
+          const effectiveRange = this.getEffectiveRange(unit);
+          let desiredRange = effectiveRange * 0.8;
           
           // SPECIAL: If capturing HQ, ignore range and move to center
           if (order === OrderType.CAPTURE && target.type === UnitType.HQ) {
@@ -356,32 +442,30 @@ export class SimulationEngine {
                   }
               }
 
-              const defenseRadius = 200; 
-              // Pull back if outside radius
-              if (minHQDistSq > defenseRadius * defenseRadius) {
-                  const seekDir = normalize({
-                      x: nearestHQ.position.x - unit.position.x,
-                      y: nearestHQ.position.y - unit.position.y
-                  });
-                  
-                  // Dynamic Pull Strength
-                  let pull = 0.0;
-                  const dist = Math.sqrt(minHQDistSq);
+              const seekDir = normalize({
+                  x: nearestHQ.position.x - unit.position.x,
+                  y: nearestHQ.position.y - unit.position.y
+              });
+              
+              const dist = Math.sqrt(minHQDistSq);
 
-                  if (unit.targetId) {
-                       // Combat Leash: Allows fighting but prevents over-chasing
-                       if (dist > 500) {
-                           pull = 1.0; // Strong pull to force retreat
-                       } else {
-                           pull = 0.3; // Weak pull to bias combat position
-                       }
-                  } else {
-                       // Idle: Return to base
-                       pull = 0.8;
-                  }
-
-                  force.x += seekDir.x * pull; 
-                  force.y += seekDir.y * pull;
+              if (unit.targetId) {
+                   // Combat Leash: Allows fighting but prevents over-chasing
+                   // If fighting, we allow a bit more range (e.g. 350px) before pulling back hard
+                   if (dist > 350) {
+                       // Hard leash - get back to base
+                       force.x += seekDir.x * 3.0; 
+                       force.y += seekDir.y * 3.0;
+                   } else if (dist > 150) {
+                       // Soft leash - bias towards base
+                       force.x += seekDir.x * 0.5;
+                       force.y += seekDir.y * 0.5;
+                   }
+              } else {
+                   // Idle: Return to center
+                   // Always pull towards center to form a tight defensive cluster on the HQ
+                   force.x += seekDir.x * 1.5; 
+                   force.y += seekDir.y * 1.5;
               }
           }
       }
@@ -522,19 +606,38 @@ export class SimulationEngine {
           // Note: distToTarget is from before movement, but it's a good enough approximation for melee range check logic
           if (target) {
               const distToTarget = Math.sqrt(distSq(unit.position, target.position));
-              
+              const effectiveRange = this.getEffectiveRange(unit);
+
               // If target is HQ, just stand there (Capture logic is in HQ update loop)
               if (target.type === UnitType.HQ) {
                  // No attack actions
-              } else if (distToTarget <= config.range + target.radius) {
+              } else if (distToTarget <= effectiveRange + target.radius) {
                   
                   // --- CHARGE LOGIC ---
                   const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
                   const momentumBonus = 1.0 + (speed * 0.5);
                   const isCharge = speed > config.speed * 0.75;
 
+                  // --- ELEVATION TACTICS ---
+                  const attackerEl = this.getElevation(unit.position);
+                  const targetEl = this.getElevation(target.position);
+                  
+                  let elevationDamageMult = 1.0;
+                  let elevationKnockbackMult = 1.0;
+                  
+                  // Scenario 1: High Ground Attacking Low (Advantage)
+                  if (attackerEl > targetEl) {
+                      elevationDamageMult = ELEVATION_CONFIG.DAMAGE_BONUS_HIGH_TO_LOW;
+                      elevationKnockbackMult = ELEVATION_CONFIG.KNOCKBACK_BONUS;
+                  }
+                  
+                  // Scenario 2: Low Ground Attacking High (Disadvantage/Cover)
+                  if (attackerEl < targetEl) {
+                      elevationDamageMult = ELEVATION_CONFIG.DAMAGE_REDUCTION_LOW_TO_HIGH;
+                  }
+
                   // Attack!
-                  const rawDamage = config.damage * momentumBonus;
+                  const rawDamage = config.damage * momentumBonus * elevationDamageMult;
                   const damage = Math.max(1, rawDamage - target.defense);
                   
                   target.health -= damage;
@@ -544,7 +647,7 @@ export class SimulationEngine {
                   // If charging, the attacker's momentum is transferred to the target BEFORE dampening.
                   if (isCharge) {
                     // Calculate momentum vector
-                    const knockbackForce = 0.8; // Efficiency of transfer
+                    const knockbackForce = 0.8 * elevationKnockbackMult; // Efficiency of transfer
                     const momentumX = unit.velocity.x * unit.mass * knockbackForce;
                     const momentumY = unit.velocity.y * unit.mass * knockbackForce;
 
@@ -597,7 +700,7 @@ export class SimulationEngine {
   }
 
   resolveCollisions() {
-    const iterations = 2; // Iterative solver for stability
+    const iterations = 4; // Increased from 2 to 4 for stiffer, less squishy collisions
     for (let k = 0; k < iterations; k++) {
       for (const unit of this.units.values()) {
         const neighbors = this.grid.getNearby(unit.position);
@@ -665,15 +768,23 @@ export class SimulationEngine {
   }
 
   findTarget(unit: Unit, order: OrderType): string | null {
-    // 1. CAPTURE ORDER PRIORITY: Scan for enemy HQ immediately
+    // 1. CAPTURE ORDER PRIORITY: Scan for NEAREST enemy HQ
     if (order === OrderType.CAPTURE) {
-        // Optimization: Use cached HQ IDs instead of full scan
+        let nearestHQ: string | null = null;
+        let minHQDistSq = Infinity;
+
+        // Optimization: Iterate only through HQ list
         for (const hqId of this.hqs) {
             const hq = this.units.get(hqId);
             if (hq && hq.team !== unit.team) {
-                return hq.id;
+                const d = distSq(unit.position, hq.position);
+                if (d < minHQDistSq) {
+                    minHQDistSq = d;
+                    nearestHQ = hqId;
+                }
             }
         }
+        if (nearestHQ) return nearestHQ;
     }
 
     let bestTargetId: string | null = null;

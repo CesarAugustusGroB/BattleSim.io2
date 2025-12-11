@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BattleCanvas } from './components/BattleCanvas';
 import { Controls } from './components/Controls';
 import { SimulationEngine } from './services/simulation';
-import { Team, UnitType, GameStateStats, OrderType } from './types';
+import { Team, UnitType, GameStateStats, OrderType, MapTool } from './types';
 import { StrategyAdvisor } from './components/StrategyAdvisor';
 
 function App() {
@@ -19,6 +19,10 @@ function App() {
   const [selectedTeam, setSelectedTeam] = useState<Team>(Team.BLUE);
   const [selectedUnit, setSelectedUnit] = useState<UnitType>(UnitType.SOLDIER);
   const [spawnCount, setSpawnCount] = useState<number>(100);
+
+  // Editor State
+  const [isMapMode, setIsMapMode] = useState(false);
+  const [mapTool, setMapTool] = useState<MapTool>(MapTool.HILL);
 
   // Stats for Gemini
   const getFullStats = useCallback((): GameStateStats => {
@@ -69,7 +73,9 @@ function App() {
         case 's': setSelectedUnit(UnitType.TANK); break;
         case 'd': setSelectedUnit(UnitType.ARCHER); break;
         case 'c': setSelectedUnit(UnitType.CAVALRY); break;
+        case 'b': setSelectedUnit(UnitType.HQ); break;
         case 'h': setDebugMode(prev => !prev); break;
+        case 'm': setIsMapMode(prev => !prev); break;
       }
     };
 
@@ -102,7 +108,18 @@ function App() {
   }, [isRunning]);
 
   const handleSpawn = (x: number, y: number) => {
-    simulationRef.current.spawnFormation(x, y, selectedTeam, selectedUnit, spawnCount);
+    if (isMapMode) {
+        if (mapTool === MapTool.HILL) {
+           simulationRef.current.addTerrainZone(x, y, 250, 1);
+        } else if (mapTool === MapTool.HQ) {
+           simulationRef.current.spawnUnit(x, y, selectedTeam, UnitType.HQ);
+        } else if (mapTool === MapTool.ERASER) {
+           simulationRef.current.removeEntityAt(x, y);
+        }
+    } else {
+        // Unit Spawner
+        simulationRef.current.spawnFormation(x, y, selectedTeam, selectedUnit, spawnCount);
+    }
   };
 
   const handleReset = () => {
@@ -148,6 +165,10 @@ function App() {
         stats={stats}
         teamOrders={teamOrders}
         setTeamOrder={handleSetOrder}
+        isMapMode={isMapMode}
+        onToggleMapMode={() => setIsMapMode(!isMapMode)}
+        mapTool={mapTool}
+        setMapTool={setMapTool}
       />
     </div>
   );

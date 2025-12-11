@@ -1,7 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import { SimulationEngine } from '../services/simulation';
-import { WORLD_WIDTH, WORLD_HEIGHT, TEAM_COLORS, UNIT_CONFIGS } from '../constants';
-import { Team, Vector2, UnitType } from '../types';
+import { WORLD_WIDTH, WORLD_HEIGHT, TEAM_COLORS, UNIT_CONFIGS, TERRAIN_CONFIG } from '../constants';
+import { Team, Vector2, UnitType, Unit } from '../types';
 
 interface BattleCanvasProps {
   simulation: SimulationEngine;
@@ -54,6 +54,42 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       ctx.strokeStyle = '#333';
       ctx.lineWidth = 5;
       ctx.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+      // --- RENDER DYNAMIC TERRAIN (Topographic Style) ---
+      for (const zone of simulation.terrainZones) {
+          
+          // Draw Base
+          ctx.beginPath();
+          ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+          ctx.fillStyle = TERRAIN_CONFIG.HILL.color;
+          ctx.fill();
+          ctx.strokeStyle = TERRAIN_CONFIG.HILL.borderColor;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          // Draw "Contour Lines" to represent height
+          const levels = 3;
+          for (let i = 1; i <= levels; i++) {
+              const r = zone.radius * (1 - i * 0.2); // 80%, 60%, 40% radius
+              if (r > 0) {
+                ctx.beginPath();
+                ctx.arc(zone.x, zone.y, r, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, 0.05)`; // Slight highlight for higher levels
+                ctx.fill();
+                ctx.strokeStyle = `rgba(100, 100, 100, 0.3)`;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+              }
+          }
+
+          // Terrain Label
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.font = 'bold 40px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('HIGH GROUND', zone.x, zone.y);
+      }
+
       
       // Draw Grid Lines (Optimization: only draw visible lines?)
       ctx.strokeStyle = '#262626';
@@ -84,95 +120,109 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
           }
       }
 
-      // Render Units
-      for (const unit of simulation.units.values()) {
+      // 1. Sort Units by Y position for Painter's Algorithm (2.5D Depth)
+      // This prevents visual overlapping/glitching
+      const sortedUnits = Array.from(simulation.units.values()).sort((a: Unit, b: Unit) => a.position.y - b.position.y);
+
+      // 2. Separate HQs from Mobile Units
+      // HQs are rendered first (background/floor layer) so units walk ON TOP of them.
+      const mobileUnits: Unit[] = [];
+      
+      // RENDER HQS FIRST
+      for (const unit of sortedUnits) {
+          if (unit.type === UnitType.HQ) {
+              const config = UNIT_CONFIGS[unit.type];
+              const colors = unit.team === Team.BLUE ? TEAM_COLORS.BLUE : TEAM_COLORS.RED;
+              
+              // --- RENDER CIRCULAR HQ (Control Point Style) ---
+              ctx.save();
+              
+              // 1. Zone Area (Semi-transparent background)
+              ctx.beginPath();
+              ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
+              ctx.fillStyle = colors.secondary + '40'; // Hex + alpha for transparency
+              ctx.fill();
+              
+              // 2. Zone Border
+              ctx.lineWidth = 4;
+              ctx.strokeStyle = colors.primary;
+              ctx.stroke();
+
+              // 3. Inner Hub (Solid)
+              ctx.beginPath();
+              ctx.arc(unit.position.x, unit.position.y, config.radius * 0.3, 0, Math.PI * 2);
+              ctx.fillStyle = colors.primary;
+              ctx.fill();
+              
+              // 4. "HQ" Label
+              ctx.fillStyle = '#fff';
+              ctx.font = 'bold 24px monospace';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText('HQ', unit.position.x, unit.position.y);
+
+              // 5. Capture Progress Ring
+              if (unit.captureProgress > 0) {
+                  const angle = (Math.PI * 2) * (unit.captureProgress / 100);
+                  // Color of the ring matches the ATTACKING team (opposite of owner)
+                  const attackColor = unit.team === Team.RED ? TEAM_COLORS.BLUE.primary : TEAM_COLORS.RED.primary;
+                  
+                  ctx.beginPath();
+                  ctx.arc(unit.position.x, unit.position.y, config.radius * 0.9, -Math.PI / 2, -Math.PI / 2 + angle);
+                  ctx.strokeStyle = attackColor;
+                  ctx.lineWidth = 8;
+                  
+                  // Pulsing glow effect
+                  ctx.shadowColor = attackColor;
+                  ctx.shadowBlur = 15 + Math.sin(Date.now() / 150) * 10;
+                  ctx.stroke();
+                  
+                  // Reset Shadow
+                  ctx.shadowBlur = 0;
+              }
+
+              ctx.restore();
+          } else {
+              mobileUnits.push(unit);
+          }
+      }
+
+      // RENDER MOBILE UNITS (Sorted by Y)
+      for (const unit of mobileUnits) {
         const config = UNIT_CONFIGS[unit.type];
         const colors = unit.team === Team.BLUE ? TEAM_COLORS.BLUE : TEAM_COLORS.RED;
         
-        if (unit.type === UnitType.HQ) {
-          // --- RENDER CIRCULAR HQ (Control Point Style) ---
-          ctx.save();
-          
-          // 1. Zone Area (Semi-transparent background)
-          ctx.beginPath();
-          ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
-          ctx.fillStyle = colors.secondary + '40'; // Hex + alpha for transparency
-          ctx.fill();
-          
-          // 2. Zone Border
-          ctx.lineWidth = 4;
-          ctx.strokeStyle = colors.primary;
-          ctx.stroke();
-
-          // 3. Inner Hub (Solid)
-          ctx.beginPath();
-          ctx.arc(unit.position.x, unit.position.y, config.radius * 0.3, 0, Math.PI * 2);
-          ctx.fillStyle = colors.primary;
-          ctx.fill();
-          
-          // 4. "HQ" Label
-          ctx.fillStyle = '#fff';
-          ctx.font = 'bold 24px monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('HQ', unit.position.x, unit.position.y);
-
-          // 5. Capture Progress Ring
-          if (unit.captureProgress > 0) {
-              const angle = (Math.PI * 2) * (unit.captureProgress / 100);
-              // Color of the ring matches the ATTACKING team (opposite of owner)
-              const attackColor = unit.team === Team.RED ? TEAM_COLORS.BLUE.primary : TEAM_COLORS.RED.primary;
-              
-              ctx.beginPath();
-              ctx.arc(unit.position.x, unit.position.y, config.radius * 0.9, -Math.PI / 2, -Math.PI / 2 + angle);
-              ctx.strokeStyle = attackColor;
-              ctx.lineWidth = 8;
-              
-              // Pulsing glow effect
-              ctx.shadowColor = attackColor;
-              ctx.shadowBlur = 15 + Math.sin(Date.now() / 150) * 10;
-              ctx.stroke();
-              
-              // Reset Shadow
-              ctx.shadowBlur = 0;
-          }
-
-          ctx.restore();
+        ctx.beginPath();
+        
+        if (unit.type === UnitType.ARCHER) {
+            // Draw Triangle for Archers
+            const r = config.radius * 1.3;
+            // Triangle pointing Up
+            ctx.moveTo(unit.position.x, unit.position.y - r);
+            ctx.lineTo(unit.position.x + r, unit.position.y + r);
+            ctx.lineTo(unit.position.x - r, unit.position.y + r);
+            ctx.closePath();
         } else {
-          // Render Normal Unit
-          
-          ctx.beginPath();
-          
-          if (unit.type === UnitType.ARCHER) {
-              // Draw Triangle for Archers
-              const r = config.radius * 1.3;
-              // Triangle pointing Up
-              ctx.moveTo(unit.position.x, unit.position.y - r);
-              ctx.lineTo(unit.position.x + r, unit.position.y + r);
-              ctx.lineTo(unit.position.x - r, unit.position.y + r);
-              ctx.closePath();
-          } else {
-              // Draw Circle for others (Soldier, Tank, Cavalry)
-              ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
-          }
+            // Draw Circle for others (Soldier, Tank, Cavalry)
+            ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
+        }
 
-          ctx.fillStyle = colors.primary;
-          ctx.fill();
-          ctx.strokeStyle = colors.secondary;
-          ctx.lineWidth = 2;
-          ctx.stroke();
+        ctx.fillStyle = colors.primary;
+        ctx.fill();
+        ctx.strokeStyle = colors.secondary;
+        ctx.lineWidth = 2;
+        ctx.stroke();
 
-          // Draw Health Bar (Optimization: only if damaged?)
-          if (unit.health < unit.maxHealth) {
-            const hpPct = unit.health / unit.maxHealth;
-            const barWidth = config.radius * 2;
-            const yOffset = unit.type === UnitType.ARCHER ? config.radius + 4 : config.radius + 6;
-            
-            ctx.fillStyle = 'red';
-            ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth, 3);
-            ctx.fillStyle = '#00ff00';
-            ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth * hpPct, 3);
-          }
+        // Draw Health Bar (Optimization: only if damaged?)
+        if (unit.health < unit.maxHealth) {
+        const hpPct = unit.health / unit.maxHealth;
+        const barWidth = config.radius * 2;
+        const yOffset = unit.type === UnitType.ARCHER ? config.radius + 4 : config.radius + 6;
+        
+        ctx.fillStyle = 'red';
+        ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth, 3);
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth * hpPct, 3);
         }
 
         // Draw Projectiles/Attack Lines
