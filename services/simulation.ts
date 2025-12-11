@@ -1,5 +1,5 @@
-import { Unit, UnitType, Team, Vector2, Particle } from '../types';
-import { WORLD_WIDTH, WORLD_HEIGHT, GRID_SIZE, UNIT_CONFIGS } from '../constants';
+import { Unit, UnitType, Team, Vector2, Particle, OrderType } from '../types';
+import { WORLD_WIDTH, WORLD_HEIGHT, GRID_SIZE, UNIT_CONFIGS, FLOCKING_CONFIG } from '../constants';
 
 // Utility for unique IDs
 const uuid = () => Math.random().toString(36).substring(2, 9);
@@ -58,17 +58,57 @@ export class SimulationEngine {
   units: Map<string, Unit> = new Map();
   particles: Particle[] = [];
   grid: SpatialGrid = new SpatialGrid();
+
+  // Squad Management
+  squads: Map<string, Unit[]> = new Map();
+  squadCentroids: Map<string, Vector2> = new Map();
   
+  // Navigation: Track squad locations by team for "Attack Nearest" logic
+  private teamSquadCentroids: Record<Team, Vector2[]> = { [Team.RED]: [], [Team.BLUE]: [] };
+  
+  private teamSquadCounters: Record<Team, number> = { [Team.RED]: 0, [Team.BLUE]: 0 };
+  private currentSquadCounts: Record<Team, number> = { [Team.RED]: 0, [Team.BLUE]: 0 };
+  
+  // Optimization: Track HQs separately for fast lookups
+  private hqs: Set<string> = new Set();
+  
+  // Optimization: Track HQs by team for Defend order
+  private teamHQs: Record<Team, Unit[]> = { [Team.RED]: [], [Team.BLUE]: [] };
+
+  // Orders
+  teamOrders: Record<Team, OrderType> = {
+    [Team.RED]: OrderType.ATTACK,
+    [Team.BLUE]: OrderType.ATTACK
+  };
+
   // For throttling AI logic
   frame: number = 0;
 
-  constructor() {}
+  constructor() {
+    this.reset();
+  }
 
   reset() {
     this.units.clear();
     this.particles = [];
     this.grid.clear();
+    this.squads.clear();
+    this.squadCentroids.clear();
+    this.hqs.clear();
+    this.teamSquadCounters = { [Team.RED]: 0, [Team.BLUE]: 0 };
+    this.currentSquadCounts = { [Team.RED]: 0, [Team.BLUE]: 0 };
+    this.teamOrders = { [Team.RED]: OrderType.ATTACK, [Team.BLUE]: OrderType.ATTACK };
+    this.teamSquadCentroids = { [Team.RED]: [], [Team.BLUE]: [] };
+    this.teamHQs = { [Team.RED]: [], [Team.BLUE]: [] };
     this.frame = 0;
+
+    // Spawn HQs
+    this.spawnUnit(150, WORLD_HEIGHT / 2, Team.RED, UnitType.HQ);
+    this.spawnUnit(WORLD_WIDTH - 150, WORLD_HEIGHT / 2, Team.BLUE, UnitType.HQ);
+  }
+
+  setOrder(team: Team, order: OrderType) {
+    this.teamOrders[team] = order;
   }
 
   spawnUnit(x: number, y: number, team: Team, type: UnitType) {
@@ -76,9 +116,26 @@ export class SimulationEngine {
     const jitterX = (Math.random() - 0.5) * 10;
     const jitterY = (Math.random() - 0.5) * 10;
     
+    // Squad Assignment Logic
+    let squadId: string;
+    
+    if (type === UnitType.HQ) {
+        squadId = `${team}_HQ`;
+    } else {
+        // Every 100 units gets a new Squad ID
+        const SQUAD_SIZE_LIMIT = 100;
+        if (this.currentSquadCounts[team] >= SQUAD_SIZE_LIMIT) {
+            this.teamSquadCounters[team]++;
+            this.currentSquadCounts[team] = 0;
+        }
+        squadId = `${team}_SQUAD_${this.teamSquadCounters[team]}`;
+        this.currentSquadCounts[team]++;
+    }
+
     const config = UNIT_CONFIGS[type];
     const unit: Unit = {
       id: uuid(),
+      squadId: squadId, // Assign squad ID
       type,
       team,
       position: { x: Math.max(0, Math.min(WORLD_WIDTH, x + jitterX)), y: Math.max(0, Math.min(WORLD_HEIGHT, y + jitterY)) },
@@ -89,9 +146,20 @@ export class SimulationEngine {
       health: config.health,
       maxHealth: config.health,
       targetId: null,
-      cooldownTimer: Math.random() * config.attackCooldown // Random start cooldown
+      cooldownTimer: Math.random() * config.attackCooldown, // Random start cooldown
+      captureProgress: 0
     };
     this.units.set(unit.id, unit);
+
+    if (type === UnitType.HQ) {
+        this.hqs.add(unit.id);
+    }
+
+    // Initial map population
+    if (!this.squads.has(squadId)) {
+      this.squads.set(squadId, []);
+    }
+    this.squads.get(squadId)!.push(unit);
   }
 
   spawnFormation(centerX: number, centerY: number, team: Team, type: UnitType, count: number) {
@@ -126,10 +194,44 @@ export class SimulationEngine {
   update() {
     this.frame++;
     
-    // 1. Rebuild Grid
+    // 1. Rebuild Grid & Squad Maps
     this.grid.clear();
+    this.squads.clear();
+    this.squadCentroids.clear();
+    this.teamSquadCentroids = { [Team.RED]: [], [Team.BLUE]: [] };
+    this.teamHQs = { [Team.RED]: [], [Team.BLUE]: [] };
+
     for (const unit of this.units.values()) {
       this.grid.add(unit);
+      
+      // Track HQs
+      if (unit.type === UnitType.HQ) {
+          this.teamHQs[unit.team].push(unit);
+      }
+
+      // Populate Squad Map
+      if (!this.squads.has(unit.squadId)) {
+        this.squads.set(unit.squadId, []);
+      }
+      this.squads.get(unit.squadId)!.push(unit);
+    }
+
+    // Calculate Squad Centroids & Populate Team Squad Lists
+    for (const [sid, members] of this.squads) {
+        if (members.length === 0) continue;
+        let sumX = 0;
+        let sumY = 0;
+        let team: Team = members[0].team;
+        
+        for (const u of members) {
+            sumX += u.position.x;
+            sumY += u.position.y;
+        }
+        const centroid = { x: sumX / members.length, y: sumY / members.length };
+        this.squadCentroids.set(sid, centroid);
+        
+        // Add to team list for navigation
+        this.teamSquadCentroids[team].push(centroid);
     }
 
     const deadUnits: string[] = [];
@@ -138,32 +240,92 @@ export class SimulationEngine {
     for (const unit of this.units.values()) {
       const config = UNIT_CONFIGS[unit.type];
       
-      // A. Target Finding (Throttled: check every 15 frames + random offset)
-      if (!unit.targetId || this.frame % 15 === parseInt(unit.id.slice(-1), 36) % 15) {
-        unit.targetId = this.findTarget(unit);
+      // --- HQ SPECIAL LOGIC (Capture, Invulnerability) ---
+      if (unit.type === UnitType.HQ) {
+          unit.health = unit.maxHealth; // Reset HP (invulnerable)
+          unit.velocity.x = 0; 
+          unit.velocity.y = 0;
+
+          // Capture Logic
+          const nearby = this.grid.getNearby(unit.position);
+          let attackers = 0;
+          let defenders = 0;
+          
+          for (const nid of nearby) {
+              if (nid === unit.id) continue;
+              const other = this.units.get(nid);
+              if (!other || other.type === UnitType.HQ) continue;
+              
+              // Check exact distance to be inside the circle
+              const dSq = distSq(unit.position, other.position);
+              if (dSq < unit.radius * unit.radius) {
+                  if (other.team === unit.team) defenders++;
+                  else attackers++;
+              }
+          }
+
+          // Rule: Must be occupied (attackers > 0) with NO defenders inside to capture
+          if (defenders === 0 && attackers > 0) {
+              // Dynamic capture rate: Base + Bonus per unit (capped)
+              const baseRate = 0.2;
+              const perUnitBonus = 0.05;
+              const maxBonus = 1.0;
+              const rate = baseRate + Math.min(maxBonus, attackers * perUnitBonus);
+              
+              unit.captureProgress += rate;
+              if (unit.captureProgress >= 100) {
+                  // Capture Complete!
+                  unit.team = unit.team === Team.RED ? Team.BLUE : Team.RED;
+                  unit.captureProgress = 0;
+                  // Effects
+                  this.spawnParticles(unit.position.x, unit.position.y, '#ffffff', 80, 12);
+                  this.spawnParticles(unit.position.x, unit.position.y, unit.team === Team.RED ? '#ef4444' : '#3b82f6', 60, 10);
+              }
+          } else if (unit.captureProgress > 0) {
+              // Decay
+              // If defenders present, decay fast. If empty, decay slowly.
+              const decay = defenders > 0 ? 2.0 : 0.5;
+              unit.captureProgress = Math.max(0, unit.captureProgress - decay);
+          }
+          
+          continue; // Skip standard movement/combat logic for HQ
       }
 
-      // B. Movement Forces
+
+      const order = this.teamOrders[unit.team];
+      
+      // A. Target Finding (Throttled)
+      // We rely heavily on "Attack Nearest" logic via movement, so targeting is only needed for combat engagement
+      if (!unit.targetId || this.frame % 15 === parseInt(unit.id.slice(-1), 36) % 15) {
+        unit.targetId = this.findTarget(unit, order);
+      }
+
+      // B. MOVEMENT & FLOCKING
       let force = { x: 0, y: 0 };
       
-      // Seek Target
+      // 1. SEEK TARGET or NAVIGATE
       let distToTarget = Infinity;
+      
       if (unit.targetId) {
         const target = this.units.get(unit.targetId);
         if (target) {
           distToTarget = Math.sqrt(distSq(unit.position, target.position));
-          // If out of range, move closer. If archer, stay at range.
-          const desiredRange = config.range * 0.8;
+          let desiredRange = config.range * 0.8;
+          
+          // SPECIAL: If capturing HQ, ignore range and move to center
+          if (order === OrderType.CAPTURE && target.type === UnitType.HQ) {
+              desiredRange = 0;
+          }
           
           if (distToTarget > desiredRange) {
              const seekDir = normalize({
                  x: target.position.x - unit.position.x,
                  y: target.position.y - unit.position.y
              });
-             force.x += seekDir.x * 0.8; // Seek weight
+             force.x += seekDir.x * 0.8; 
              force.y += seekDir.y * 0.8;
-          } else if (unit.type === UnitType.ARCHER && distToTarget < desiredRange * 0.5) {
-             // Archers back up if too close
+          } else if (unit.type === UnitType.ARCHER && distToTarget < desiredRange * 0.5 && target.type !== UnitType.HQ) {
+             // Archers keep distance (unless capturing HQ)
              const fleeDir = normalize({
                 x: unit.position.x - target.position.x,
                 y: unit.position.y - target.position.y
@@ -172,18 +334,168 @@ export class SimulationEngine {
             force.y += fleeDir.y * 0.5;
           }
         } else {
-            unit.targetId = null; // Target dead
+            unit.targetId = null;
         }
+      } 
+      
+      // 2. ORDER SPECIFIC NAVIGATION
+
+      // DEFEND: Gravitate towards HQ (Always applies, acting as a leash)
+      if (order === OrderType.DEFEND) {
+          const friendlyHQs = this.teamHQs[unit.team];
+          if (friendlyHQs.length > 0) {
+              // Find nearest HQ
+              let nearestHQ = friendlyHQs[0];
+              let minHQDistSq = distSq(unit.position, nearestHQ.position);
+              
+              for (let i = 1; i < friendlyHQs.length; i++) {
+                  const d = distSq(unit.position, friendlyHQs[i].position);
+                  if (d < minHQDistSq) {
+                      minHQDistSq = d;
+                      nearestHQ = friendlyHQs[i];
+                  }
+              }
+
+              const defenseRadius = 200; 
+              // Pull back if outside radius
+              if (minHQDistSq > defenseRadius * defenseRadius) {
+                  const seekDir = normalize({
+                      x: nearestHQ.position.x - unit.position.x,
+                      y: nearestHQ.position.y - unit.position.y
+                  });
+                  
+                  // Dynamic Pull Strength
+                  let pull = 0.0;
+                  const dist = Math.sqrt(minHQDistSq);
+
+                  if (unit.targetId) {
+                       // Combat Leash: Allows fighting but prevents over-chasing
+                       if (dist > 500) {
+                           pull = 1.0; // Strong pull to force retreat
+                       } else {
+                           pull = 0.3; // Weak pull to bias combat position
+                       }
+                  } else {
+                       // Idle: Return to base
+                       pull = 0.8;
+                  }
+
+                  force.x += seekDir.x * pull; 
+                  force.y += seekDir.y * pull;
+              }
+          }
       }
 
+      // ATTACK: Search for enemies (Only if no target)
+      if (!unit.targetId && order === OrderType.ATTACK) {
+            // ATTACK NEAREST LOGIC
+            // If we don't have a direct target, move towards the nearest Enemy Squad Centroid.
+            // This ensures units don't just stand around if enemies are far away, and they
+            // naturally gravitate towards the closest fight.
+            const enemyTeam = unit.team === Team.RED ? Team.BLUE : Team.RED;
+            const enemySquads = this.teamSquadCentroids[enemyTeam];
+            
+            if (enemySquads.length > 0) {
+                let nearestSquad = enemySquads[0];
+                let minSquadDistSq = distSq(unit.position, nearestSquad);
+
+                // Find closest enemy squad
+                for (let i = 1; i < enemySquads.length; i++) {
+                    const d = distSq(unit.position, enemySquads[i]);
+                    if (d < minSquadDistSq) {
+                        minSquadDistSq = d;
+                        nearestSquad = enemySquads[i];
+                    }
+                }
+                
+                // Move towards that squad
+                const seekDir = normalize({
+                    x: nearestSquad.x - unit.position.x,
+                    y: nearestSquad.y - unit.position.y
+                });
+                force.x += seekDir.x * 0.7; // Slightly weaker than target seek
+                force.y += seekDir.y * 0.7;
+            }
+      }
+
+      // 3. FLOCKING (Separation, Alignment, Cohesion)
+      const nearby = this.grid.getNearby(unit.position);
+      let sepForce = { x: 0, y: 0 };
+      let alignForce = { x: 0, y: 0 };
+      let cohesionForce = { x: 0, y: 0 };
+      let squadNeighbors = 0;
+
+      for (const nid of nearby) {
+          if (nid === unit.id) continue;
+          const other = this.units.get(nid);
+          if (!other) continue;
+
+          const d = Math.sqrt(distSq(unit.position, other.position));
+          
+          // Separation: Avoid crowding (applies to ALL units)
+          if (d < FLOCKING_CONFIG.SEPARATION_RADIUS && d > 0) {
+              const push = normalize({ x: unit.position.x - other.position.x, y: unit.position.y - other.position.y });
+              // Weight by distance (closer = stronger push)
+              sepForce.x += push.x / d;
+              sepForce.y += push.y / d;
+          }
+
+          // Alignment & Cohesion: ONLY apply to Squad Mates
+          if (other.squadId === unit.squadId && d < FLOCKING_CONFIG.NEIGHBOR_RADIUS) {
+              alignForce.x += other.velocity.x;
+              alignForce.y += other.velocity.y;
+              cohesionForce.x += other.position.x;
+              cohesionForce.y += other.position.y;
+              squadNeighbors++;
+          }
+      }
+
+      // Apply Flocking Averages
+      if (squadNeighbors > 0) {
+          // Alignment (Match velocity)
+          alignForce.x /= squadNeighbors;
+          alignForce.y /= squadNeighbors;
+          alignForce = normalize(alignForce); // Direction only
+          
+          // Cohesion (Steer towards local center)
+          cohesionForce.x /= squadNeighbors;
+          cohesionForce.y /= squadNeighbors;
+          let steerToCenter = { x: cohesionForce.x - unit.position.x, y: cohesionForce.y - unit.position.y };
+          steerToCenter = normalize(steerToCenter);
+
+          force.x += alignForce.x * FLOCKING_CONFIG.ALIGNMENT_WEIGHT;
+          force.y += alignForce.y * FLOCKING_CONFIG.ALIGNMENT_WEIGHT;
+          force.x += steerToCenter.x * FLOCKING_CONFIG.COHESION_WEIGHT;
+          force.y += steerToCenter.y * FLOCKING_CONFIG.COHESION_WEIGHT;
+      }
+
+      // Separation is always applied
+      force.x += sepForce.x * FLOCKING_CONFIG.SEPARATION_WEIGHT;
+      force.y += sepForce.y * FLOCKING_CONFIG.SEPARATION_WEIGHT;
+
+      // 4. SQUAD MAGNETISM (Global Cohesion)
+      // Pull stragglers back to the main squad body even if they have no immediate neighbors
+      const squadCenter = this.squadCentroids.get(unit.squadId);
+      if (squadCenter) {
+          const distToSquadCenter = Math.sqrt(distSq(unit.position, squadCenter));
+          if (distToSquadCenter > FLOCKING_CONFIG.NEIGHBOR_RADIUS) {
+               let toCenter = { x: squadCenter.x - unit.position.x, y: squadCenter.y - unit.position.y };
+               toCenter = normalize(toCenter);
+               force.x += toCenter.x * FLOCKING_CONFIG.SQUAD_MAGNETISM_WEIGHT;
+               force.y += toCenter.y * FLOCKING_CONFIG.SQUAD_MAGNETISM_WEIGHT;
+          }
+      }
+
+      // Physics Integration
       // Apply Force to Velocity with ACCELERATION
-      // Physics: Force * Acceleration_Factor -> Velocity change
       unit.velocity.x += force.x * config.acceleration; 
       unit.velocity.y += force.y * config.acceleration;
 
       // Friction / Damping
-      unit.velocity.x *= 0.9;
-      unit.velocity.y *= 0.9;
+      // If Defending and no target, apply stronger braking to "Hold Ground"
+      const friction = (order === OrderType.DEFEND && !unit.targetId) ? 0.8 : 0.9;
+      unit.velocity.x *= friction;
+      unit.velocity.y *= friction;
 
       // Clamp Velocity
       const currentSpeed = Math.sqrt(unit.velocity.x**2 + unit.velocity.y**2);
@@ -208,45 +520,50 @@ export class SimulationEngine {
       if (unit.targetId && unit.cooldownTimer <= 0) {
           const target = this.units.get(unit.targetId);
           // Note: distToTarget is from before movement, but it's a good enough approximation for melee range check logic
-          if (target && distToTarget <= config.range + target.radius) {
+          if (target) {
+              const distToTarget = Math.sqrt(distSq(unit.position, target.position));
               
-              // --- CHARGE LOGIC ---
-              const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
-              const momentumBonus = 1.0 + (speed * 0.5);
-              const isCharge = speed > config.speed * 0.75;
+              // If target is HQ, just stand there (Capture logic is in HQ update loop)
+              if (target.type === UnitType.HQ) {
+                 // No attack actions
+              } else if (distToTarget <= config.range + target.radius) {
+                  
+                  // --- CHARGE LOGIC ---
+                  const speed = Math.sqrt(unit.velocity.x ** 2 + unit.velocity.y ** 2);
+                  const momentumBonus = 1.0 + (speed * 0.5);
+                  const isCharge = speed > config.speed * 0.75;
 
-              // Attack!
-              const rawDamage = config.damage * momentumBonus;
-              const damage = Math.max(1, rawDamage - target.defense);
-              
-              target.health -= damage;
-              unit.cooldownTimer = config.attackCooldown;
+                  // Attack!
+                  const rawDamage = config.damage * momentumBonus;
+                  const damage = Math.max(1, rawDamage - target.defense);
+                  
+                  target.health -= damage;
+                  unit.cooldownTimer = config.attackCooldown;
 
-              // --- MOMENTUM TRANSFER (Knockback) ---
-              // If charging, the attacker's momentum is transferred to the target BEFORE dampening.
-              if (isCharge) {
-                // Calculate momentum vector
-                const knockbackForce = 0.8; // Efficiency of transfer
-                const momentumX = unit.velocity.x * unit.mass * knockbackForce;
-                const momentumY = unit.velocity.y * unit.mass * knockbackForce;
+                  // --- MOMENTUM TRANSFER (Knockback) ---
+                  // If charging, the attacker's momentum is transferred to the target BEFORE dampening.
+                  if (isCharge) {
+                    // Calculate momentum vector
+                    const knockbackForce = 0.8; // Efficiency of transfer
+                    const momentumX = unit.velocity.x * unit.mass * knockbackForce;
+                    const momentumY = unit.velocity.y * unit.mass * knockbackForce;
 
-                // Apply to target (dv = p / m)
-                // Heavier targets (Tanks) will resist this much more than light targets.
-                target.velocity.x += momentumX / target.mass;
-                target.velocity.y += momentumY / target.mass;
+                    // Apply to target (dv = p / m)
+                    // Heavier targets (Tanks, HQs) will resist this much more than light targets.
+                    target.velocity.x += momentumX / target.mass;
+                    target.velocity.y += momentumY / target.mass;
+                  }
+                  
+                  // Impact Shock: Attacker loses momentum on hit
+                  const impactDampening = isCharge ? 0.05 : 0.25;
+                  unit.velocity.x *= impactDampening;
+                  unit.velocity.y *= impactDampening;
+
+                  // Sparks on hit - scale size/count with damage intensity
+                  const particleSize = Math.max(2, Math.min(6, damage / 3));
+                  const particleCount = Math.floor(damage / 3) + 2;
+                  this.spawnParticles(target.position.x, target.position.y, '#ffffff', particleCount, particleSize);
               }
-              
-              // Impact Shock: Attacker loses momentum on hit
-              // If it was a high-momentum charge, the unit crashes and loses almost all speed.
-              // This prevents "shoving" heavy units continuously.
-              const impactDampening = isCharge ? 0.05 : 0.25;
-              unit.velocity.x *= impactDampening;
-              unit.velocity.y *= impactDampening;
-
-              // Sparks on hit - scale size/count with damage intensity
-              const particleSize = Math.max(2, Math.min(6, damage / 3));
-              const particleCount = Math.floor(damage / 3) + 2;
-              this.spawnParticles(target.position.x, target.position.y, '#ffffff', particleCount, particleSize);
           }
       }
       
@@ -288,6 +605,9 @@ export class SimulationEngine {
           if (unit.id === nid) continue;
           const other = this.units.get(nid);
           if (!other) continue;
+          
+          // Allow units to walk ON TOP of HQs for capture mechanic
+          if (unit.type === UnitType.HQ || other.type === UnitType.HQ) continue;
 
           const dx = unit.position.x - other.position.x;
           const dy = unit.position.y - other.position.y;
@@ -316,8 +636,6 @@ export class SimulationEngine {
             
             // --- VELOCITY IMPULSE (BOUNCE) ---
             // Only apply force if they are actually crashing into each other.
-            // If they are just touching (pushing), this value is small/zero, 
-            // preventing the "continuous sliding" effect.
             
             const relVx = other.velocity.x - unit.velocity.x;
             const relVy = other.velocity.y - unit.velocity.y;
@@ -346,45 +664,47 @@ export class SimulationEngine {
     }
   }
 
-  findTarget(unit: Unit): string | null {
+  findTarget(unit: Unit, order: OrderType): string | null {
+    // 1. CAPTURE ORDER PRIORITY: Scan for enemy HQ immediately
+    if (order === OrderType.CAPTURE) {
+        // Optimization: Use cached HQ IDs instead of full scan
+        for (const hqId of this.hqs) {
+            const hq = this.units.get(hqId);
+            if (hq && hq.team !== unit.team) {
+                return hq.id;
+            }
+        }
+    }
+
     let bestTargetId: string | null = null;
     let minDistSq = Infinity;
     
-    // Optimization: Check nearby cells first
+    // 2. CHECK NEARBY (Spatial Grid)
+    // This efficiently finds the NEAREST local enemy.
     const nearby = this.grid.getNearby(unit.position);
-    let foundNearby = false;
 
     for (const nid of nearby) {
         if (nid === unit.id) continue;
         const other = this.units.get(nid);
-        if (!other || other.team === unit.team) continue;
+        
+        // Skip same team OR HQ (HQ cannot be targeted for attacks, only capture order targets them)
+        if (!other || other.team === unit.team || other.type === UnitType.HQ) continue;
 
         const d = distSq(unit.position, other.position);
         if (d < minDistSq) {
             minDistSq = d;
             bestTargetId = other.id;
-            foundNearby = true;
         }
     }
 
-    if (foundNearby) return bestTargetId;
+    // If we found a local target, lock it.
+    if (bestTargetId) return bestTargetId;
 
-    // Fallback: Global search (expensive, but necessary if no local targets)
-    let globalScanLimit = 20; // Only check 20 random units to save FPS
-    let count = 0;
+    // 3. NO GLOBAL FALLBACK
+    // If no target is nearby, we return null.
+    // The Update loop will then guide the unit towards the nearest Enemy Squad Centroid.
+    // This simulates "Attacking Nearest" by moving the army closer until the spatial grid check succeeds.
     
-    for (const other of this.units.values()) {
-        if (other.team !== unit.team) {
-             const d = distSq(unit.position, other.position);
-             if (d < minDistSq) {
-                 minDistSq = d;
-                 bestTargetId = other.id;
-             }
-             count++;
-             if (count > globalScanLimit) break; 
-        }
-    }
-
-    return bestTargetId;
+    return null;
   }
 }

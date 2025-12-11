@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { BattleCanvas } from './components/BattleCanvas';
 import { Controls } from './components/Controls';
 import { SimulationEngine } from './services/simulation';
-import { Team, UnitType, GameStateStats } from './types';
+import { Team, UnitType, GameStateStats, OrderType } from './types';
 import { StrategyAdvisor } from './components/StrategyAdvisor';
 
 function App() {
@@ -12,6 +12,8 @@ function App() {
   // React state for UI updates (lower frequency)
   const [isRunning, setIsRunning] = useState(true);
   const [stats, setStats] = useState({ red: 0, blue: 0 });
+  const [debugMode, setDebugMode] = useState(false);
+  const [teamOrders, setTeamOrders] = useState({ [Team.RED]: OrderType.ATTACK, [Team.BLUE]: OrderType.ATTACK });
   
   // Selection State
   const [selectedTeam, setSelectedTeam] = useState<Team>(Team.BLUE);
@@ -24,8 +26,20 @@ function App() {
     const stats: GameStateStats = {
       redCount: 0,
       blueCount: 0,
-      redComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 },
-      blueComposition: { [UnitType.SOLDIER]: 0, [UnitType.TANK]: 0, [UnitType.ARCHER]: 0, [UnitType.CAVALRY]: 0 }
+      redComposition: { 
+        [UnitType.SOLDIER]: 0, 
+        [UnitType.TANK]: 0, 
+        [UnitType.ARCHER]: 0, 
+        [UnitType.CAVALRY]: 0,
+        [UnitType.HQ]: 0 
+      },
+      blueComposition: { 
+        [UnitType.SOLDIER]: 0, 
+        [UnitType.TANK]: 0, 
+        [UnitType.ARCHER]: 0, 
+        [UnitType.CAVALRY]: 0,
+        [UnitType.HQ]: 0 
+      }
     };
 
     for (const unit of sim.units.values()) {
@@ -55,6 +69,7 @@ function App() {
         case 's': setSelectedUnit(UnitType.TANK); break;
         case 'd': setSelectedUnit(UnitType.ARCHER); break;
         case 'c': setSelectedUnit(UnitType.CAVALRY); break;
+        case 'h': setDebugMode(prev => !prev); break;
       }
     };
 
@@ -93,6 +108,15 @@ function App() {
   const handleReset = () => {
     simulationRef.current.reset();
     setStats({ red: 0, blue: 0 });
+    // Reset orders
+    simulationRef.current.setOrder(Team.RED, OrderType.ATTACK);
+    simulationRef.current.setOrder(Team.BLUE, OrderType.ATTACK);
+    setTeamOrders({ [Team.RED]: OrderType.ATTACK, [Team.BLUE]: OrderType.ATTACK });
+  };
+
+  const handleSetOrder = (team: Team, order: OrderType) => {
+      simulationRef.current.setOrder(team, order);
+      setTeamOrders(prev => ({ ...prev, [team]: order }));
   };
 
   return (
@@ -103,6 +127,7 @@ function App() {
         <BattleCanvas 
           simulation={simulationRef.current} 
           onSelectPos={handleSpawn} 
+          debugMode={debugMode}
         />
       </div>
 
@@ -121,6 +146,8 @@ function App() {
         spawnCount={spawnCount}
         setSpawnCount={setSpawnCount}
         stats={stats}
+        teamOrders={teamOrders}
+        setTeamOrder={handleSetOrder}
       />
     </div>
   );

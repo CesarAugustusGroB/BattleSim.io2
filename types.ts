@@ -7,7 +7,14 @@ export enum UnitType {
   SOLDIER = 'SOLDIER',
   TANK = 'TANK',
   ARCHER = 'ARCHER',
-  CAVALRY = 'CAVALRY'
+  CAVALRY = 'CAVALRY',
+  HQ = 'HQ'
+}
+
+export enum OrderType {
+  ATTACK = 'ATTACK',
+  DEFEND = 'DEFEND',
+  CAPTURE = 'CAPTURE'
 }
 
 export interface Vector2 {
@@ -31,6 +38,7 @@ export interface UnitConfig {
 
 export interface Unit {
   id: string;
+  squadId: string; // Added for squad system
   type: UnitType;
   team: Team;
   position: Vector2;
@@ -42,6 +50,7 @@ export interface Unit {
   maxHealth: number;
   targetId: string | null;
   cooldownTimer: number;
+  captureProgress: number; // 0 to 100, used for HQs
 }
 
 export interface Particle {

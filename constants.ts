@@ -4,6 +4,16 @@ export const WORLD_WIDTH = 2000;
 export const WORLD_HEIGHT = 1500;
 export const GRID_SIZE = 50; // Size of spatial partition cells
 
+// Flocking & Squad Behavior Constants
+export const FLOCKING_CONFIG = {
+  SEPARATION_WEIGHT: 1.5,
+  ALIGNMENT_WEIGHT: 0.8,
+  COHESION_WEIGHT: 0.6,
+  SQUAD_MAGNETISM_WEIGHT: 0.05, // Pull towards squad center
+  SEPARATION_RADIUS: 25,
+  NEIGHBOR_RADIUS: 80
+};
+
 export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
   [UnitType.SOLDIER]: {
     type: UnitType.SOLDIER,
@@ -55,6 +65,19 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     damage: 12,
     range: 18, // Melee but slightly longer reach
     attackCooldown: 50,
+    color: '#',
+  },
+  [UnitType.HQ]: {
+    type: UnitType.HQ,
+    radius: 50, // Large capture zone
+    mass: 50000, // Effectively immovable
+    defense: 100, // Irrelevant as it takes no damage
+    speed: 0,
+    acceleration: 0,
+    health: 10000, // Irrelevant as it takes no damage
+    damage: 0, // HQs do not attack directly
+    range: 0,
+    attackCooldown: 1000,
     color: '#',
   }
 };

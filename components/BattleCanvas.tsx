@@ -6,9 +6,10 @@ import { Team, Vector2, UnitType } from '../types';
 interface BattleCanvasProps {
   simulation: SimulationEngine;
   onSelectPos: (x: number, y: number) => void;
+  debugMode?: boolean;
 }
 
-export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelectPos }) => {
+export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelectPos, debugMode = false }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -68,28 +69,110 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
       }
       ctx.stroke();
 
+      // DEBUG: Draw Squad Lines
+      if (debugMode) {
+          ctx.lineWidth = 1;
+          for (const unit of simulation.units.values()) {
+              const center = simulation.squadCentroids.get(unit.squadId);
+              if (center) {
+                  ctx.beginPath();
+                  ctx.moveTo(unit.position.x, unit.position.y);
+                  ctx.lineTo(center.x, center.y);
+                  ctx.strokeStyle = unit.team === Team.RED ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)';
+                  ctx.stroke();
+              }
+          }
+      }
+
       // Render Units
       for (const unit of simulation.units.values()) {
         const config = UNIT_CONFIGS[unit.type];
         const colors = unit.team === Team.BLUE ? TEAM_COLORS.BLUE : TEAM_COLORS.RED;
         
-        // Draw Body
-        ctx.beginPath();
-        ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
-        ctx.fillStyle = colors.primary;
-        ctx.fill();
-        ctx.strokeStyle = colors.secondary;
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        if (unit.type === UnitType.HQ) {
+          // --- RENDER CIRCULAR HQ (Control Point Style) ---
+          ctx.save();
+          
+          // 1. Zone Area (Semi-transparent background)
+          ctx.beginPath();
+          ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
+          ctx.fillStyle = colors.secondary + '40'; // Hex + alpha for transparency
+          ctx.fill();
+          
+          // 2. Zone Border
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = colors.primary;
+          ctx.stroke();
 
-        // Draw Health Bar (Optimization: only if damaged?)
-        if (unit.health < unit.maxHealth) {
-          const hpPct = unit.health / unit.maxHealth;
-          const barWidth = config.radius * 2;
-          ctx.fillStyle = 'red';
-          ctx.fillRect(unit.position.x - config.radius, unit.position.y - config.radius - 6, barWidth, 3);
-          ctx.fillStyle = '#00ff00';
-          ctx.fillRect(unit.position.x - config.radius, unit.position.y - config.radius - 6, barWidth * hpPct, 3);
+          // 3. Inner Hub (Solid)
+          ctx.beginPath();
+          ctx.arc(unit.position.x, unit.position.y, config.radius * 0.3, 0, Math.PI * 2);
+          ctx.fillStyle = colors.primary;
+          ctx.fill();
+          
+          // 4. "HQ" Label
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 24px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('HQ', unit.position.x, unit.position.y);
+
+          // 5. Capture Progress Ring
+          if (unit.captureProgress > 0) {
+              const angle = (Math.PI * 2) * (unit.captureProgress / 100);
+              // Color of the ring matches the ATTACKING team (opposite of owner)
+              const attackColor = unit.team === Team.RED ? TEAM_COLORS.BLUE.primary : TEAM_COLORS.RED.primary;
+              
+              ctx.beginPath();
+              ctx.arc(unit.position.x, unit.position.y, config.radius * 0.9, -Math.PI / 2, -Math.PI / 2 + angle);
+              ctx.strokeStyle = attackColor;
+              ctx.lineWidth = 8;
+              
+              // Pulsing glow effect
+              ctx.shadowColor = attackColor;
+              ctx.shadowBlur = 15 + Math.sin(Date.now() / 150) * 10;
+              ctx.stroke();
+              
+              // Reset Shadow
+              ctx.shadowBlur = 0;
+          }
+
+          ctx.restore();
+        } else {
+          // Render Normal Unit
+          
+          ctx.beginPath();
+          
+          if (unit.type === UnitType.ARCHER) {
+              // Draw Triangle for Archers
+              const r = config.radius * 1.3;
+              // Triangle pointing Up
+              ctx.moveTo(unit.position.x, unit.position.y - r);
+              ctx.lineTo(unit.position.x + r, unit.position.y + r);
+              ctx.lineTo(unit.position.x - r, unit.position.y + r);
+              ctx.closePath();
+          } else {
+              // Draw Circle for others (Soldier, Tank, Cavalry)
+              ctx.arc(unit.position.x, unit.position.y, config.radius, 0, Math.PI * 2);
+          }
+
+          ctx.fillStyle = colors.primary;
+          ctx.fill();
+          ctx.strokeStyle = colors.secondary;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          // Draw Health Bar (Optimization: only if damaged?)
+          if (unit.health < unit.maxHealth) {
+            const hpPct = unit.health / unit.maxHealth;
+            const barWidth = config.radius * 2;
+            const yOffset = unit.type === UnitType.ARCHER ? config.radius + 4 : config.radius + 6;
+            
+            ctx.fillStyle = 'red';
+            ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth, 3);
+            ctx.fillStyle = '#00ff00';
+            ctx.fillRect(unit.position.x - config.radius, unit.position.y - yOffset, barWidth * hpPct, 3);
+          }
         }
 
         // Draw Projectiles/Attack Lines
@@ -123,7 +206,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
     render();
 
     return () => cancelAnimationFrame(animationFrameId);
-  }, [simulation]);
+  }, [simulation, debugMode]);
 
   // Mouse Handlers for Camera and Spawning
   const handleWheel = (e: React.WheelEvent) => {
@@ -182,7 +265,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ simulation, onSelect
         className="block"
       />
       <div className="absolute top-4 left-4 text-white/50 text-xs select-none pointer-events-none">
-        Right-click to Pan • Scroll to Zoom • Left-click to Spawn
+        Right-click to Pan • Scroll to Zoom • Left-click to Spawn • Press 'H' for Debug
       </div>
     </div>
   );
