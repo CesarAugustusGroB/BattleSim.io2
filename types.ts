@@ -61,6 +61,11 @@ export interface Unit {
   morale: number;
   commandTarget: Vector2 | null;
   cachedFlockingForce: Vector2;
+
+  // Pathfinding
+  path: Vector2[] | null;
+  pathIndex: number;
+  lastPathRequest: number;
 }
 
 export interface Particle {
@@ -76,11 +81,22 @@ export interface Particle {
 
 // --- Worker Types ---
 
+export enum TerrainType {
+  GROUND = 'GROUND',
+  WALL = 'WALL',
+  WATER = 'WATER',
+  FOREST = 'FOREST'
+}
+
+export type TerrainMap = Record<number, TerrainType>;
+
 export interface SimState {
   units: Unit[]; // Array for easier iteration/serialization
   particles: Particle[];
   stats: GameStateStats;
   frame: number;
+  gridSize: number;
+  terrain: TerrainMap;
 }
 
 export type WorkerMessage =
@@ -88,7 +104,9 @@ export type WorkerMessage =
   | { type: 'PAUSE' }
   | { type: 'RESET' }
   | { type: 'SPAWN', payload: { x: number, y: number, team: Team, type: UnitType, count: number } }
-  | { type: 'UPDATE_STRATEGY', payload: { team: Team, strategy: TeamStrategy } };
+  | { type: 'UPDATE_STRATEGY', payload: { team: Team, strategy: TeamStrategy } }
+  | { type: 'SET_GRID_SIZE', payload: number }
+  | { type: 'EDIT_TERRAIN', payload: { cellIndex: number, type: TerrainType, brushSize?: number } }; // brushSize defaults to 1
 
 export type WorkerResponse =
   | { type: 'TICK', payload: SimState };

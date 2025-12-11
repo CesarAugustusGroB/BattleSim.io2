@@ -43,7 +43,9 @@ const tick = () => {
             units: unitsArray,
             particles: simulation.particles,
             stats: stats,
-            frame: simulation.frame
+            frame: simulation.frame,
+            gridSize: simulation.gridSize,
+            terrain: simulation.terrain
         }
     };
 
@@ -81,6 +83,15 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
             break;
         case 'UPDATE_STRATEGY':
             simulation.teamStrategies.set(msg.payload.team, msg.payload.strategy);
+            break;
+        case 'SET_GRID_SIZE':
+            simulation.setGridSize(msg.payload);
+            break;
+        case 'EDIT_TERRAIN':
+            simulation.editTerrain(
+                msg.payload.cellIndex,
+                msg.payload.type
+            );
             break;
     }
 };

@@ -1,8 +1,8 @@
-import { UnitConfig, UnitType } from './types';
+import { UnitConfig, UnitType, TerrainType } from './types';
 
 export const WORLD_WIDTH = 2000;
 export const WORLD_HEIGHT = 1500;
-export const GRID_SIZE = 50; // Size of spatial partition cells
+export const DEFAULT_GRID_SIZE = 50; // Size of spatial partition cells
 
 export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
   [UnitType.SOLDIER]: {
@@ -57,6 +57,13 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     attackCooldown: 55, // Fast strikes
     color: '#',
   }
+};
+
+export const TERRAIN_CONFIGS = {
+  [TerrainType.GROUND]: { color: 0x1a1a1a, speedMultiplier: 1.0, isWall: false },
+  [TerrainType.WALL]: { color: 0x888888, speedMultiplier: 0.0, isWall: true },
+  [TerrainType.WATER]: { color: 0x1e3a8a, speedMultiplier: 0.3, isWall: false },
+  [TerrainType.FOREST]: { color: 0x064e3b, speedMultiplier: 0.6, isWall: false }
 };
 
 export const TEAM_COLORS = {

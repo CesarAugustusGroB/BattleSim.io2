@@ -7,16 +7,20 @@ import { Application, Container, Sprite, Graphics, Text, Texture } from 'pixi.js
 interface BattleCanvasProps {
   gameStateRef: React.MutableRefObject<SimState | null>;
   onSelectPos: (x: number, y: number) => void;
+  editMode: 'UNITS' | 'TERRAIN';
 }
 
-export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSelectPos }) => {
+export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSelectPos, editMode }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const [cursorStyle, setCursorStyle] = useState('cursor-crosshair');
 
-  // Keep callback fresh for event listeners
+  // We use refs for callbacks to avoid re-binding event listeners
   const onSelectPosRef = useRef(onSelectPos);
-  useEffect(() => { onSelectPosRef.current = onSelectPos; }, [onSelectPos]);
+  onSelectPosRef.current = onSelectPos;
+
+  const editModeRef = useRef(editMode);
+  editModeRef.current = editMode;
 
   // We track visual objects mapped to simulation IDs
   const spriteMap = useRef<Map<string, Container>>((new Map())); // Unit Container (Sprite + Shadow + HP)
@@ -41,6 +45,9 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
 
   // NOTE: We don't need a local ref for 'gameState' anymore because we receive the Ref from parent.
 
+
+
+  const terrainGraphics = useRef<Graphics | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -76,35 +83,24 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
       app.stage.addChild(worldStage);
 
       // Layers
+      const terrainLayer = new Graphics();
       const gridLayer = new Graphics();
       const shadowLayer = new Container();
       const unitLayer = new Container();
       const effectLayer = new Container(); // Particles & Projectiles
       const uiLayer = new Container(); // Selection boxes etc
 
+      worldStage.addChild(terrainLayer);
       worldStage.addChild(gridLayer);
       worldStage.addChild(shadowLayer); // Shadows below units
       worldStage.addChild(unitLayer);
       worldStage.addChild(effectLayer);
       worldStage.addChild(uiLayer);
 
-      // 3. Draw Static Grid
-      // v8 Graphics API is: graphics.moveTo(..).lineTo(..).stroke({ width: 2, color: 0x262626 })
-      gridLayer.moveTo(0, 0);
+      terrainGraphics.current = terrainLayer;
 
-      // Draw Loop for Grid
-      for (let x = 0; x <= WORLD_WIDTH; x += 100) {
-        gridLayer.moveTo(x, 0).lineTo(x, WORLD_HEIGHT);
-      }
-      for (let y = 0; y <= WORLD_HEIGHT; y += 100) {
-        gridLayer.moveTo(0, y).lineTo(WORLD_WIDTH, y);
-      }
-      gridLayer.stroke({ width: 2, color: 0x262626 });
-
-      // World Border
-      gridLayer.rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      gridLayer.stroke({ width: 5, color: 0x333333 });
-
+      // State tracking for grid redraw optimization
+      let lastGridSize = -1;
 
       // 4. Setup Particle Graphics
       const pGraphics = new Graphics();
@@ -117,10 +113,94 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
         const state = gameStateRef.current;
         if (!state) return;
 
+        // X. Draw Grid & Terrain (Only if changed or first frame)
+        // Actually terrain might change often during edit, so we redraw terrain every frame or check dirty flag?
+        // For now, redraw terrain every frame is simplest. Optimization: Chunking.
+        // But for grid lines, only check size.
+
+        if (state.gridSize !== lastGridSize) {
+          lastGridSize = state.gridSize;
+          gridLayer.clear();
+          gridLayer.stroke({ width: 1, color: 0x262626 });
+
+          const size = state.gridSize;
+          // Calculate grid bounds
+          // Need to cover world width/height with hexes
+          // W = size * sqrt(3)
+          // H = size * 3/2
+          const hexW = size * Math.sqrt(3);
+          const hexH = size * 1.5;
+          const cols = Math.ceil(WORLD_WIDTH / hexW) + 2;
+          const rows = Math.ceil(WORLD_HEIGHT / hexH) + 2;
+
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              // Pointy Top Hex Center
+              const x = hexW * (c + 0.5 * (r & 1));
+              const y = hexH * r;
+
+              // Draw Hex Polygon
+              // Corners: angle = 30 + 60*i
+              const path: number[] = [];
+              for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 180) * (30 + 60 * i);
+                path.push(x + size * Math.cos(angle));
+                path.push(y + size * Math.sin(angle));
+              }
+              gridLayer.poly(path);
+              gridLayer.stroke(); // Draw outlining
+            }
+          }
+
+          // World Border
+          gridLayer.rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+          gridLayer.stroke({ width: 5, color: 0x333333 });
+        }
+
+        // Draw Terrain
+        terrainLayer.clear();
+        if (state.terrain) {
+          const size = state.gridSize;
+          const hexW = size * Math.sqrt(3);
+          const hexH = size * 1.5;
+
+          // Iterate terrain map (Key -> Type)
+          for (const keyStr in state.terrain) {
+            const key = parseInt(keyStr);
+            const type = state.terrain[key];
+
+            // DECODE KEY (row * 5000 + col)
+            // Assuming max 5000 cols
+            const col = key % 5000;
+            const row = Math.floor(key / 5000);
+
+            let color = 0x000000;
+            let alpha = 1.0;
+            if (type === 'WALL') color = 0x888888;
+            else if (type === 'WATER') { color = 0x1e3a8a; alpha = 0.8; }
+            else if (type === 'FOREST') { color = 0x064e3b; alpha = 0.6; } // Translucent forest
+
+            if (color !== 0) {
+              const x = hexW * (col + 0.5 * (row & 1));
+              const y = hexH * row;
+
+              const path: number[] = [];
+              for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 180) * (30 + 60 * i);
+                path.push(x + size * Math.cos(angle));
+                path.push(y + size * Math.sin(angle));
+              }
+              terrainLayer.poly(path);
+              terrainLayer.fill({ color, alpha });
+            }
+          }
+        }
+
         // A. Sync Units
         const units = state.units; // Array!
         const processedIds = new Set<string>();
 
+        // ... (Unit syncing logic remains same)
         // Optimizing Unit Lookup for Projectiles (unitId -> Unit)
         // Since we receive an array, we might want a Map for O(1) lookup if we do target lookups.
         // But building a Map every frame is overhead.
@@ -213,6 +293,8 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
         if (keysPressed.current.has('KeyA') || keysPressed.current.has('ArrowLeft')) stage.x += panSpeed;
         if (keysPressed.current.has('KeyD') || keysPressed.current.has('ArrowRight')) stage.x -= panSpeed;
 
+        // Mouse edge panning? Maybe later.
+
       });
 
       // Camera State in Pixi
@@ -231,6 +313,8 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
   }, []);
 
   // Helpers
+  // ... (createUnitVisual, updateHealthBar, stringToHex remain)
+
   const createUnitVisual = (unit: Unit): Container => {
     const container = new Container();
     const config = UNIT_CONFIGS[unit.type];
@@ -282,6 +366,7 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
 
   // Input Handling (Refs because Event Listeners capture closure)
   const isDragging = useRef(false);
+  const isPainting = useRef(false); // New flag for painting interaction
   const lastMouse = useRef({ x: 0, y: 0 });
 
   // Native DOM Listeners for Input
@@ -310,6 +395,17 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
       stage.y = mouseY - worldY * newZoom;
     };
 
+    const getEventPos = (e: MouseEvent) => {
+      if (!appRef.current) return { x: 0, y: 0 };
+      const stage = appRef.current.stage.children[0] as Container;
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const worldX = (mouseX - stage.x) / stage.scale.x;
+      const worldY = (mouseY - stage.y) / stage.scale.y;
+      return { x: worldX, y: worldY };
+    }
+
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 1 || e.altKey) {
         e.preventDefault();
@@ -317,15 +413,10 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
         lastMouse.current = { x: e.clientX, y: e.clientY };
         setCursorStyle('cursor-grabbing');
       } else if (e.button === 0) {
-        if (!appRef.current) return;
-        const stage = appRef.current.stage.children[0] as Container;
-        const rect = el.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-
-        const worldX = (mouseX - stage.x) / stage.scale.x;
-        const worldY = (mouseY - stage.y) / stage.scale.y;
-        onSelectPosRef.current(worldX, worldY);
+        // Painting or Spawning
+        isPainting.current = true;
+        const { x, y } = getEventPos(e);
+        onSelectPosRef.current(x, y);
       }
     };
 
@@ -337,11 +428,18 @@ export const BattleCanvas: React.FC<BattleCanvasProps> = ({ gameStateRef, onSele
         stage.x += dx;
         stage.y += dy;
         lastMouse.current = { x: e.clientX, y: e.clientY };
+      } else if (isPainting.current) {
+        // Only allow continuous painting/spawning if in TERRAIN mode
+        if (editModeRef.current === 'TERRAIN') {
+          const { x, y } = getEventPos(e);
+          onSelectPosRef.current(x, y);
+        }
       }
     };
 
     const onMouseUp = () => {
       isDragging.current = false;
+      isPainting.current = false;
       setCursorStyle('cursor-crosshair');
     };
 
